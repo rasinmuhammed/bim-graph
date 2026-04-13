@@ -1,0 +1,132 @@
+2026-04-13 12:09:18,412 | INFO | Audit log initialised → /Users/muhammedrasin/bim-graph/logs/bim_graph_20260413_120918.log
+2026-04-13 12:09:18,417 | INFO | ============================================================
+2026-04-13 12:09:18,417 | INFO | BIM-Graph Pipeline START
+2026-04-13 12:09:18,417 | INFO | Query: List all equipment and mechanical assets located specifically on level 2
+2026-04-13 12:09:18,417 | INFO | ============================================================
+2026-04-13 12:09:18,419 | INFO | ▶ [Node 0] extract_spatial_constraints  |  query: 'List all equipment and mechanical assets located specifically on level 2'
+2026-04-13 12:09:18,715 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:09:18,734 | INFO |   ✓ Extracted spatial constraint: 'Level 2'
+2026-04-13 12:09:18,735 | INFO | ▶ [Node 1] retrieve_dense  |  query: 'List all equipment and mechanical assets located specifically on level 2'
+2026-04-13 12:09:18,873 | INFO |   Embedding query via Ollama nomic-embed-text …
+2026-04-13 12:09:19,003 | INFO | HTTP Request: POST http://127.0.0.1:11434/api/embed "HTTP/1.1 200 OK"
+2026-04-13 12:09:19,019 | INFO |   ✓ Retrieved 5 chunks from ChromaDB.
+2026-04-13 12:09:19,021 | INFO | ▶ [Node 2] generate  |  context chunks: 5
+2026-04-13 12:09:19,021 | INFO |   [API Pacing] Pausing for 5s to avoid Groq rate limits...
+2026-04-13 12:09:25,025 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:09:25,029 | INFO |   ✓ Generation complete (379 chars).
+2026-04-13 12:09:25,030 | INFO | ▶ [Node 3] evaluate  |  spatial_constraints: 'Level 2'
+2026-04-13 12:09:25,030 | INFO |   [API Pacing] Pausing for 5s to avoid Groq rate limits...
+2026-04-13 12:09:30,731 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:09:30,734 | INFO |   Evaluator verdict → spatial_match=False
+2026-04-13 12:09:30,734 | WARNING |   ⚠  Spatial mismatch: Answer states it cannot determine which floor assets belong to.
+2026-04-13 12:09:30,734 | WARNING |   ↳  Self-healing will trigger (spatial_ast_retrieval).
+2026-04-13 12:09:30,736 | INFO | ▶ [Node 4] spatial_ast_retrieval  |  target storey: 'Level 2'
+2026-04-13 12:09:30,889 | INFO |   Matched IFC storey: 'Level 2'  (GUID: 1xS3BCk291UvhgP2dvNMQJ)
+2026-04-13 12:09:30,889 | INFO |   ✓ Extracted 73 elements from storey 'Level 2' via AST traversal.
+2026-04-13 12:09:30,889 | INFO |   Correction log entry #1 appended.
+2026-04-13 12:09:30,912 | INFO | ▶ [Node 2] generate  |  context chunks: 73
+2026-04-13 12:09:30,912 | INFO |   [API Pacing] Pausing for 5s to avoid Groq rate limits...
+2026-04-13 12:09:37,455 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:09:37,457 | INFO |   ✓ Generation complete (538 chars).
+2026-04-13 12:09:37,458 | INFO | ▶ [Node 3] evaluate  |  spatial_constraints: 'Level 2'
+2026-04-13 12:09:37,458 | INFO |   [API Pacing] Pausing for 5s to avoid Groq rate limits...
+2026-04-13 12:09:43,189 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:09:43,192 | INFO |   Evaluator verdict → spatial_match=False
+2026-04-13 12:09:43,192 | WARNING |   ⚠  Spatial mismatch: Answer admits insufficient spatial data to determine floor assignments for assets.
+2026-04-13 12:09:43,192 | WARNING |   ↳  Self-healing will trigger (spatial_ast_retrieval).
+2026-04-13 12:09:43,193 | INFO | ▶ [Node 4] spatial_ast_retrieval  |  target storey: 'Level 2'
+2026-04-13 12:09:43,341 | INFO |   Matched IFC storey: 'Level 2'  (GUID: 1xS3BCk291UvhgP2dvNMQJ)
+2026-04-13 12:09:43,342 | INFO |   ✓ Extracted 73 elements from storey 'Level 2' via AST traversal.
+2026-04-13 12:09:43,342 | INFO |   Correction log entry #2 appended.
+2026-04-13 12:09:43,361 | INFO | ▶ [Node 2] generate  |  context chunks: 73
+2026-04-13 12:09:43,361 | INFO |   [API Pacing] Pausing for 5s to avoid Groq rate limits...
+2026-04-13 12:09:48,543 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:09:48,543 | INFO | Retrying request to /openai/v1/chat/completions in 30.000000 seconds
+2026-04-13 12:10:18,716 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:10:18,718 | INFO | Retrying request to /openai/v1/chat/completions in 4.000000 seconds
+2026-04-13 12:10:24,040 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:10:24,042 | INFO |   ✓ Generation complete (343 chars).
+2026-04-13 12:10:24,046 | INFO | ▶ [Node 3] evaluate  |  spatial_constraints: 'Level 2'
+2026-04-13 12:10:24,047 | INFO |   [API Pacing] Pausing for 5s to avoid Groq rate limits...
+2026-04-13 12:10:29,898 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:10:29,900 | INFO |   Evaluator verdict → spatial_match=False
+2026-04-13 12:10:29,900 | WARNING |   ⚠  Spatial mismatch: Answer states it cannot determine which floor assets belong to.
+2026-04-13 12:10:29,900 | WARNING |   ↳  Self-healing will trigger (spatial_ast_retrieval).
+2026-04-13 12:10:29,901 | INFO | ▶ [Node 4] spatial_ast_retrieval  |  target storey: 'Level 2'
+2026-04-13 12:10:30,050 | INFO |   Matched IFC storey: 'Level 2'  (GUID: 1xS3BCk291UvhgP2dvNMQJ)
+2026-04-13 12:10:30,050 | INFO |   ✓ Extracted 73 elements from storey 'Level 2' via AST traversal.
+2026-04-13 12:10:30,050 | INFO |   Correction log entry #3 appended.
+2026-04-13 12:10:30,073 | INFO | ▶ [Node 2] generate  |  context chunks: 73
+2026-04-13 12:10:30,073 | INFO |   [API Pacing] Pausing for 5s to avoid Groq rate limits...
+2026-04-13 12:10:35,251 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:10:35,252 | INFO | Retrying request to /openai/v1/chat/completions in 32.000000 seconds
+2026-04-13 12:11:07,427 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:11:07,428 | INFO | Retrying request to /openai/v1/chat/completions in 4.000000 seconds
+2026-04-13 12:11:13,435 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:11:13,436 | INFO |   ✓ Generation complete (595 chars).
+2026-04-13 12:11:13,437 | INFO | ▶ [Node 3] evaluate  |  spatial_constraints: 'Level 2'
+2026-04-13 12:11:13,437 | INFO |   [API Pacing] Pausing for 5s to avoid Groq rate limits...
+2026-04-13 12:11:19,226 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:11:19,230 | INFO |   Evaluator verdict → spatial_match=False
+2026-04-13 12:11:19,230 | WARNING |   ⚠  Spatial mismatch: Answer states it cannot determine which floor assets belong to.
+2026-04-13 12:11:19,230 | WARNING |   ↳  Self-healing will trigger (spatial_ast_retrieval).
+2026-04-13 12:11:19,232 | INFO | ▶ [Node 4] spatial_ast_retrieval  |  target storey: 'Level 2'
+2026-04-13 12:11:19,381 | INFO |   Matched IFC storey: 'Level 2'  (GUID: 1xS3BCk291UvhgP2dvNMQJ)
+2026-04-13 12:11:19,382 | INFO |   ✓ Extracted 73 elements from storey 'Level 2' via AST traversal.
+2026-04-13 12:11:19,382 | INFO |   Correction log entry #4 appended.
+2026-04-13 12:11:19,400 | INFO | ▶ [Node 2] generate  |  context chunks: 73
+2026-04-13 12:11:19,400 | INFO |   [API Pacing] Pausing for 5s to avoid Groq rate limits...
+2026-04-13 12:11:24,572 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:11:24,574 | INFO | Retrying request to /openai/v1/chat/completions in 34.000000 seconds
+2026-04-13 12:11:58,746 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:11:58,747 | INFO | Retrying request to /openai/v1/chat/completions in 4.000000 seconds
+2026-04-13 12:12:04,478 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:12:04,481 | INFO |   ✓ Generation complete (394 chars).
+2026-04-13 12:12:04,482 | INFO | ▶ [Node 3] evaluate  |  spatial_constraints: 'Level 2'
+2026-04-13 12:12:04,482 | INFO |   [API Pacing] Pausing for 5s to avoid Groq rate limits...
+2026-04-13 12:12:10,218 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:12:10,221 | INFO |   Evaluator verdict → spatial_match=False
+2026-04-13 12:12:10,222 | WARNING |   ⚠  Spatial mismatch: Answer admits it cannot determine the floor and lacks sufficient spatial data to confirm assets on Level 2.
+2026-04-13 12:12:10,222 | WARNING |   ↳  Self-healing will trigger (spatial_ast_retrieval).
+2026-04-13 12:12:10,224 | INFO | ▶ [Node 4] spatial_ast_retrieval  |  target storey: 'Level 2'
+2026-04-13 12:12:10,369 | INFO |   Matched IFC storey: 'Level 2'  (GUID: 1xS3BCk291UvhgP2dvNMQJ)
+2026-04-13 12:12:10,370 | INFO |   ✓ Extracted 73 elements from storey 'Level 2' via AST traversal.
+2026-04-13 12:12:10,370 | INFO |   Correction log entry #5 appended.
+2026-04-13 12:12:10,391 | INFO | ▶ [Node 2] generate  |  context chunks: 73
+2026-04-13 12:12:10,391 | INFO |   [API Pacing] Pausing for 5s to avoid Groq rate limits...
+2026-04-13 12:12:15,572 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:12:15,573 | INFO | Retrying request to /openai/v1/chat/completions in 33.000000 seconds
+2026-04-13 12:12:50,152 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:12:50,155 | INFO |   ✓ Generation complete (494 chars).
+2026-04-13 12:12:50,157 | INFO | ▶ [Node 3] evaluate  |  spatial_constraints: 'Level 2'
+2026-04-13 12:12:50,157 | INFO |   [API Pacing] Pausing for 5s to avoid Groq rate limits...
+2026-04-13 12:12:55,342 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:12:55,344 | INFO | Retrying request to /openai/v1/chat/completions in 3.000000 seconds
+2026-04-13 12:12:58,969 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:12:58,973 | INFO |   Evaluator verdict → spatial_match=False
+2026-04-13 12:12:58,973 | WARNING |   ⚠  Spatial mismatch: Answer states it cannot determine which floor assets belong to.
+2026-04-13 12:12:58,973 | WARNING |   ↳  Self-healing will trigger (spatial_ast_retrieval).
+2026-04-13 12:12:58,975 | INFO | ▶ [Node 4] spatial_ast_retrieval  |  target storey: 'Level 2'
+2026-04-13 12:12:59,124 | INFO |   Matched IFC storey: 'Level 2'  (GUID: 1xS3BCk291UvhgP2dvNMQJ)
+2026-04-13 12:12:59,125 | INFO |   ✓ Extracted 73 elements from storey 'Level 2' via AST traversal.
+2026-04-13 12:12:59,125 | INFO |   Correction log entry #6 appended.
+2026-04-13 12:12:59,147 | INFO | ▶ [Node 2] generate  |  context chunks: 73
+2026-04-13 12:12:59,147 | INFO |   [API Pacing] Pausing for 5s to avoid Groq rate limits...
+2026-04-13 12:13:04,327 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:13:04,328 | INFO | Retrying request to /openai/v1/chat/completions in 37.000000 seconds
+2026-04-13 12:13:42,606 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:13:42,611 | INFO |   ✓ Generation complete (344 chars).
+2026-04-13 12:13:42,615 | INFO | ▶ [Node 3] evaluate  |  spatial_constraints: 'Level 2'
+2026-04-13 12:13:42,615 | INFO |   [API Pacing] Pausing for 5s to avoid Groq rate limits...
+2026-04-13 12:13:48,312 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:13:48,315 | INFO |   Evaluator verdict → spatial_match=False
+2026-04-13 12:13:48,315 | WARNING |   ⚠  Spatial mismatch: Answer states it cannot determine which floor assets belong to.
+2026-04-13 12:13:48,315 | WARNING |   ↳  Self-healing will trigger (spatial_ast_retrieval).
+2026-04-13 12:13:48,317 | INFO | ▶ [Node 4] spatial_ast_retrieval  |  target storey: 'Level 2'
+2026-04-13 12:13:48,466 | INFO |   Matched IFC storey: 'Level 2'  (GUID: 1xS3BCk291UvhgP2dvNMQJ)
+2026-04-13 12:13:48,467 | INFO |   ✓ Extracted 73 elements from storey 'Level 2' via AST traversal.
+2026-04-13 12:13:48,467 | INFO |   Correction log entry #7 appended.
+2026-04-13 12:13:48,487 | INFO | ▶ [Node 2] generate  |  context chunks: 73
+2026-04-13 12:13:48,488 | INFO |   [API Pacing] Pausing for 5s to avoid Groq rate limits...
+2026-04-13 12:13:53,667 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:13:53,667 | INFO | Retrying request to /openai/v1/chat/completions in 35.000000 seconds

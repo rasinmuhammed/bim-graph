@@ -1,0 +1,22 @@
+2026-04-13 11:53:19,922 | INFO | Audit log initialised → logs/bim_graph_20260413_115319.log
+2026-04-13 11:53:19,927 | INFO | ============================================================
+2026-04-13 11:53:19,928 | INFO | BIM-Graph Pipeline START
+2026-04-13 11:53:19,928 | INFO | Query: List all equipment and mechanical assets located specifically on level 2
+2026-04-13 11:53:19,928 | INFO | ============================================================
+2026-04-13 11:53:19,929 | INFO | ▶ [Node 0] extract_spatial_constraints  |  query: 'List all equipment and mechanical assets located specifically on level 2'
+2026-04-13 11:53:20,245 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 11:53:20,266 | INFO |   ✓ Extracted spatial constraint: 'Level 2'
+2026-04-13 11:53:20,267 | INFO | ▶ [Node 1] retrieve_dense  |  query: 'List all equipment and mechanical assets located specifically on level 2'
+2026-04-13 11:53:20,404 | INFO |   Embedding query via Ollama nomic-embed-text …
+2026-04-13 11:53:20,998 | INFO | HTTP Request: POST http://127.0.0.1:11434/api/embed "HTTP/1.1 200 OK"
+2026-04-13 11:53:21,011 | INFO |   ✓ Retrieved 0 chunks from ChromaDB.
+2026-04-13 11:53:21,013 | INFO | ▶ [Node 2] generate  |  context chunks: 0
+2026-04-13 11:53:22,086 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 11:53:22,088 | INFO |   ✓ Generation complete (1622 chars).
+2026-04-13 11:53:22,089 | INFO | ▶ [Node 3] evaluate  |  spatial_constraints: 'Level 2'
+2026-04-13 11:53:22,671 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 11:53:22,674 | WARNING |   Could not parse evaluator JSON — defaulting to spatial_match=False.
+2026-04-13 11:53:22,674 | INFO |   Evaluator verdict → spatial_match=False
+2026-04-13 11:53:22,674 | WARNING |   ⚠  Spatial mismatch: Could not parse evaluator response.
+2026-04-13 11:53:22,674 | WARNING |   ↳  Self-healing will trigger (spatial_ast_retrieval).
+2026-04-13 11:53:22,676 | INFO | ▶ [Node 4] spatial_ast_retrieval  |  target storey: 'Level 2'

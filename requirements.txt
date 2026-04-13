@@ -1,0 +1,9 @@
+ifcopenshell
+pydantic>=2.0
+
+chromadb
+langchain
+langchain-community
+rank-bm25
+langchain-groq
+langchain-ollama

@@ -1,0 +1,145 @@
+2026-04-13 11:58:47,394 | INFO | Audit log initialised → /Users/muhammedrasin/bim-graph/logs/bim_graph_20260413_115847.log
+2026-04-13 11:58:47,400 | INFO | ============================================================
+2026-04-13 11:58:47,400 | INFO | BIM-Graph Pipeline START
+2026-04-13 11:58:47,400 | INFO | Query: List all equipment and mechanical assets located specifically on level 2
+2026-04-13 11:58:47,400 | INFO | ============================================================
+2026-04-13 11:58:47,402 | INFO | ▶ [Node 0] extract_spatial_constraints  |  query: 'List all equipment and mechanical assets located specifically on level 2'
+2026-04-13 11:58:47,936 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 11:58:47,951 | INFO |   ✓ Extracted spatial constraint: 'Level 2'
+2026-04-13 11:58:47,953 | INFO | ▶ [Node 1] retrieve_dense  |  query: 'List all equipment and mechanical assets located specifically on level 2'
+2026-04-13 11:58:48,140 | INFO |   Embedding query via Ollama nomic-embed-text …
+2026-04-13 11:58:48,792 | INFO | HTTP Request: POST http://127.0.0.1:11434/api/embed "HTTP/1.1 200 OK"
+2026-04-13 11:58:48,813 | INFO |   ✓ Retrieved 5 chunks from ChromaDB.
+2026-04-13 11:58:48,815 | INFO | ▶ [Node 2] generate  |  context chunks: 5
+2026-04-13 11:58:49,680 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 11:58:49,684 | INFO |   ✓ Generation complete (1239 chars).
+2026-04-13 11:58:49,685 | INFO | ▶ [Node 3] evaluate  |  spatial_constraints: 'Level 2'
+2026-04-13 11:58:51,112 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 11:58:51,114 | WARNING |   Could not parse evaluator JSON — defaulting to spatial_match=False.
+2026-04-13 11:58:51,115 | INFO |   Evaluator verdict → spatial_match=False
+2026-04-13 11:58:51,115 | WARNING |   ⚠  Spatial mismatch: Could not parse evaluator response.
+2026-04-13 11:58:51,115 | WARNING |   ↳  Self-healing will trigger (spatial_ast_retrieval).
+2026-04-13 11:58:51,117 | INFO | ▶ [Node 4] spatial_ast_retrieval  |  target storey: 'Level 2'
+2026-04-13 11:58:51,271 | INFO |   Matched IFC storey: 'Level 2'  (GUID: 1xS3BCk291UvhgP2dvNMQJ)
+2026-04-13 11:58:51,272 | INFO |   ✓ Extracted 73 elements from storey 'Level 2' via AST traversal.
+2026-04-13 11:58:51,272 | INFO |   Correction log entry #1 appended.
+2026-04-13 11:58:51,295 | INFO | ▶ [Node 2] generate  |  context chunks: 73
+2026-04-13 11:58:51,447 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 11:58:51,448 | INFO | Retrying request to /openai/v1/chat/completions in 4.000000 seconds
+2026-04-13 11:58:57,151 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 11:58:57,154 | INFO |   ✓ Generation complete (2489 chars).
+2026-04-13 11:58:57,156 | INFO | ▶ [Node 3] evaluate  |  spatial_constraints: 'Level 2'
+2026-04-13 11:58:57,327 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 11:58:57,328 | INFO | Retrying request to /openai/v1/chat/completions in 6.000000 seconds
+2026-04-13 11:59:04,015 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 11:59:04,018 | WARNING |   Could not parse evaluator JSON — defaulting to spatial_match=False.
+2026-04-13 11:59:04,018 | INFO |   Evaluator verdict → spatial_match=False
+2026-04-13 11:59:04,018 | WARNING |   ⚠  Spatial mismatch: Could not parse evaluator response.
+2026-04-13 11:59:04,018 | WARNING |   ↳  Self-healing will trigger (spatial_ast_retrieval).
+2026-04-13 11:59:04,020 | INFO | ▶ [Node 4] spatial_ast_retrieval  |  target storey: 'Level 2'
+2026-04-13 11:59:04,163 | INFO |   Matched IFC storey: 'Level 2'  (GUID: 1xS3BCk291UvhgP2dvNMQJ)
+2026-04-13 11:59:04,164 | INFO |   ✓ Extracted 73 elements from storey 'Level 2' via AST traversal.
+2026-04-13 11:59:04,164 | INFO |   Correction log entry #2 appended.
+2026-04-13 11:59:04,184 | INFO | ▶ [Node 2] generate  |  context chunks: 73
+2026-04-13 11:59:04,329 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 11:59:04,329 | INFO | Retrying request to /openai/v1/chat/completions in 42.000000 seconds
+2026-04-13 11:59:46,503 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 11:59:46,503 | INFO | Retrying request to /openai/v1/chat/completions in 3.000000 seconds
+2026-04-13 11:59:50,738 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 11:59:50,740 | INFO |   ✓ Generation complete (1718 chars).
+2026-04-13 11:59:50,740 | INFO | ▶ [Node 3] evaluate  |  spatial_constraints: 'Level 2'
+2026-04-13 11:59:50,921 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 11:59:50,922 | INFO | Retrying request to /openai/v1/chat/completions in 3.000000 seconds
+2026-04-13 11:59:53,988 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 11:59:53,989 | INFO | Retrying request to /openai/v1/chat/completions in 5.000000 seconds
+2026-04-13 12:00:00,035 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:00:00,038 | WARNING |   Could not parse evaluator JSON — defaulting to spatial_match=False.
+2026-04-13 12:00:00,038 | INFO |   Evaluator verdict → spatial_match=False
+2026-04-13 12:00:00,038 | WARNING |   ⚠  Spatial mismatch: Could not parse evaluator response.
+2026-04-13 12:00:00,038 | WARNING |   ↳  Self-healing will trigger (spatial_ast_retrieval).
+2026-04-13 12:00:00,040 | INFO | ▶ [Node 4] spatial_ast_retrieval  |  target storey: 'Level 2'
+2026-04-13 12:00:00,188 | INFO |   Matched IFC storey: 'Level 2'  (GUID: 1xS3BCk291UvhgP2dvNMQJ)
+2026-04-13 12:00:00,189 | INFO |   ✓ Extracted 73 elements from storey 'Level 2' via AST traversal.
+2026-04-13 12:00:00,189 | INFO |   Correction log entry #3 appended.
+2026-04-13 12:00:00,210 | INFO | ▶ [Node 2] generate  |  context chunks: 73
+2026-04-13 12:00:00,361 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:00:00,362 | INFO | Retrying request to /openai/v1/chat/completions in 36.000000 seconds
+2026-04-13 12:00:36,520 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:00:36,522 | INFO | Retrying request to /openai/v1/chat/completions in 4.000000 seconds
+2026-04-13 12:00:42,111 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:00:42,117 | INFO |   ✓ Generation complete (2216 chars).
+2026-04-13 12:00:42,121 | INFO | ▶ [Node 3] evaluate  |  spatial_constraints: 'Level 2'
+2026-04-13 12:00:42,286 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:00:42,287 | INFO | Retrying request to /openai/v1/chat/completions in 4.000000 seconds
+2026-04-13 12:00:47,026 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:00:47,028 | WARNING |   Could not parse evaluator JSON — defaulting to spatial_match=False.
+2026-04-13 12:00:47,029 | INFO |   Evaluator verdict → spatial_match=False
+2026-04-13 12:00:47,029 | WARNING |   ⚠  Spatial mismatch: Could not parse evaluator response.
+2026-04-13 12:00:47,029 | WARNING |   ↳  Self-healing will trigger (spatial_ast_retrieval).
+2026-04-13 12:00:47,031 | INFO | ▶ [Node 4] spatial_ast_retrieval  |  target storey: 'Level 2'
+2026-04-13 12:00:47,180 | INFO |   Matched IFC storey: 'Level 2'  (GUID: 1xS3BCk291UvhgP2dvNMQJ)
+2026-04-13 12:00:47,181 | INFO |   ✓ Extracted 73 elements from storey 'Level 2' via AST traversal.
+2026-04-13 12:00:47,181 | INFO |   Correction log entry #4 appended.
+2026-04-13 12:00:47,201 | INFO | ▶ [Node 2] generate  |  context chunks: 73
+2026-04-13 12:00:47,374 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:00:47,375 | INFO | Retrying request to /openai/v1/chat/completions in 37.000000 seconds
+2026-04-13 12:01:24,542 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:01:24,543 | INFO | Retrying request to /openai/v1/chat/completions in 4.000000 seconds
+2026-04-13 12:01:29,929 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:01:29,932 | INFO |   ✓ Generation complete (2021 chars).
+2026-04-13 12:01:29,934 | INFO | ▶ [Node 3] evaluate  |  spatial_constraints: 'Level 2'
+2026-04-13 12:01:30,546 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:01:30,548 | WARNING |   Could not parse evaluator JSON — defaulting to spatial_match=False.
+2026-04-13 12:01:30,548 | INFO |   Evaluator verdict → spatial_match=False
+2026-04-13 12:01:30,548 | WARNING |   ⚠  Spatial mismatch: Could not parse evaluator response.
+2026-04-13 12:01:30,548 | WARNING |   ↳  Self-healing will trigger (spatial_ast_retrieval).
+2026-04-13 12:01:30,550 | INFO | ▶ [Node 4] spatial_ast_retrieval  |  target storey: 'Level 2'
+2026-04-13 12:01:30,696 | INFO |   Matched IFC storey: 'Level 2'  (GUID: 1xS3BCk291UvhgP2dvNMQJ)
+2026-04-13 12:01:30,697 | INFO |   ✓ Extracted 73 elements from storey 'Level 2' via AST traversal.
+2026-04-13 12:01:30,697 | INFO |   Correction log entry #5 appended.
+2026-04-13 12:01:30,718 | INFO | ▶ [Node 2] generate  |  context chunks: 73
+2026-04-13 12:01:30,898 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:01:30,899 | INFO | Retrying request to /openai/v1/chat/completions in 34.000000 seconds
+2026-04-13 12:02:06,385 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:02:06,388 | INFO |   ✓ Generation complete (1980 chars).
+2026-04-13 12:02:06,389 | INFO | ▶ [Node 3] evaluate  |  spatial_constraints: 'Level 2'
+2026-04-13 12:02:06,607 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:02:06,608 | INFO | Retrying request to /openai/v1/chat/completions in 8.000000 seconds
+2026-04-13 12:02:15,194 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:02:15,197 | WARNING |   Could not parse evaluator JSON — defaulting to spatial_match=False.
+2026-04-13 12:02:15,197 | INFO |   Evaluator verdict → spatial_match=False
+2026-04-13 12:02:15,197 | WARNING |   ⚠  Spatial mismatch: Could not parse evaluator response.
+2026-04-13 12:02:15,197 | WARNING |   ↳  Self-healing will trigger (spatial_ast_retrieval).
+2026-04-13 12:02:15,199 | INFO | ▶ [Node 4] spatial_ast_retrieval  |  target storey: 'Level 2'
+2026-04-13 12:02:15,380 | INFO |   Matched IFC storey: 'Level 2'  (GUID: 1xS3BCk291UvhgP2dvNMQJ)
+2026-04-13 12:02:15,381 | INFO |   ✓ Extracted 73 elements from storey 'Level 2' via AST traversal.
+2026-04-13 12:02:15,381 | INFO |   Correction log entry #6 appended.
+2026-04-13 12:02:15,400 | INFO | ▶ [Node 2] generate  |  context chunks: 73
+2026-04-13 12:02:15,587 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:02:15,588 | INFO | Retrying request to /openai/v1/chat/completions in 41.000000 seconds
+2026-04-13 12:02:57,893 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:02:57,897 | INFO |   ✓ Generation complete (1779 chars).
+2026-04-13 12:02:57,899 | INFO | ▶ [Node 3] evaluate  |  spatial_constraints: 'Level 2'
+2026-04-13 12:02:58,058 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:02:58,059 | INFO | Retrying request to /openai/v1/chat/completions in 7.000000 seconds
+2026-04-13 12:03:08,031 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:03:08,034 | WARNING |   Could not parse evaluator JSON — defaulting to spatial_match=False.
+2026-04-13 12:03:08,035 | INFO |   Evaluator verdict → spatial_match=False
+2026-04-13 12:03:08,035 | WARNING |   ⚠  Spatial mismatch: Could not parse evaluator response.
+2026-04-13 12:03:08,035 | WARNING |   ↳  Self-healing will trigger (spatial_ast_retrieval).
+2026-04-13 12:03:08,037 | INFO | ▶ [Node 4] spatial_ast_retrieval  |  target storey: 'Level 2'
+2026-04-13 12:03:08,185 | INFO |   Matched IFC storey: 'Level 2'  (GUID: 1xS3BCk291UvhgP2dvNMQJ)
+2026-04-13 12:03:08,185 | INFO |   ✓ Extracted 73 elements from storey 'Level 2' via AST traversal.
+2026-04-13 12:03:08,185 | INFO |   Correction log entry #7 appended.
+2026-04-13 12:03:08,205 | INFO | ▶ [Node 2] generate  |  context chunks: 73
+2026-04-13 12:03:08,353 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:03:08,354 | INFO | Retrying request to /openai/v1/chat/completions in 42.000000 seconds
+2026-04-13 12:03:50,510 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:03:50,511 | INFO | Retrying request to /openai/v1/chat/completions in 3.000000 seconds
+2026-04-13 12:03:54,620 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:03:54,624 | INFO |   ✓ Generation complete (1303 chars).
+2026-04-13 12:03:54,626 | INFO | ▶ [Node 3] evaluate  |  spatial_constraints: 'Level 2'
+2026-04-13 12:03:54,799 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:03:54,800 | INFO | Retrying request to /openai/v1/chat/completions in 2.000000 seconds
+2026-04-13 12:03:56,868 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:03:56,869 | INFO | Retrying request to /openai/v1/chat/completions in 3.000000 seconds

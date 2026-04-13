@@ -1,0 +1,39 @@
+2026-04-13 12:32:37,748 | INFO | Audit log initialised → /Users/muhammedrasin/bim-graph/logs/bim_graph_20260413_123237.log
+2026-04-13 12:32:37,755 | INFO | ============================================================
+2026-04-13 12:32:37,755 | INFO | BIM-Graph Pipeline START
+2026-04-13 12:32:37,755 | INFO | Query: List all equipment and mechanical assets located specifically on level 2
+2026-04-13 12:32:37,755 | INFO | ============================================================
+2026-04-13 12:32:37,757 | INFO | ▶ [Node 0] extract_spatial_constraints  |  query: 'List all equipment and mechanical assets located specifically on level 2'
+2026-04-13 12:32:38,327 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:32:38,350 | INFO |   ✓ Extracted spatial constraint: 'Level 2'
+2026-04-13 12:32:38,351 | INFO | ▶ [Node 1] retrieve_dense  |  query: 'List all equipment and mechanical assets located specifically on level 2'
+2026-04-13 12:32:38,488 | INFO |   Embedding query via Ollama nomic-embed-text …
+2026-04-13 12:32:39,184 | INFO | HTTP Request: POST http://127.0.0.1:11434/api/embed "HTTP/1.1 200 OK"
+2026-04-13 12:32:39,220 | INFO |   ✓ Retrieved 5 chunks from ChromaDB.
+2026-04-13 12:32:39,222 | INFO | ▶ [Node 2] generate  |  context chunks: 5  |  source: dense
+2026-04-13 12:32:39,222 | INFO |   [API Pacing] Pausing 5s to respect Groq rate limits …
+2026-04-13 12:32:45,259 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:32:45,263 | INFO |   ✓ Generation complete (303 chars).
+2026-04-13 12:32:45,265 | INFO | ▶ [Node 3] evaluate  |  constraints: 'Level 2'  |  source: dense
+2026-04-13 12:32:45,265 | INFO |   [API Pacing] Pausing 5s to respect Groq rate limits …
+2026-04-13 12:32:51,609 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:32:51,614 | INFO |   Evaluator verdict → spatial_match=False | reason: The answer explicitly states it is not possible to determine floor assignments due to missing spatial hierarchy data in the context.
+2026-04-13 12:32:51,615 | WARNING |   ⚠  Spatial mismatch on dense retrieval: The answer explicitly states it is not possible to determine floor assignments due to missing spatial hierarchy data in the context.
+2026-04-13 12:32:51,615 | WARNING |   ↳  Self-healing will trigger (spatial_ast_retrieval).
+2026-04-13 12:32:51,616 | INFO | ▶ [Node 4] spatial_ast_retrieval  |  target storey: 'Level 2'  |  equipment_filter: True
+2026-04-13 12:32:51,770 | INFO |   Matched IFC storey: 'Level 2'  (GUID: 1xS3BCk291UvhgP2dvNMQJ)
+2026-04-13 12:32:51,770 | INFO |   ✓ Extracted 73 elements from storey 'Level 2' (filter: ALL (no MEP types found on this floor) | total on floor: 73 | MEP: 0 | arch: 73).
+2026-04-13 12:32:51,771 | INFO |   Correction log entry #1 appended. Loop count now: 1
+2026-04-13 12:32:51,792 | INFO | ▶ [Node 2] generate  |  context chunks: 74  |  source: ast
+2026-04-13 12:32:51,792 | INFO |   [API Pacing] Pausing 5s to respect Groq rate limits …
+2026-04-13 12:32:58,980 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:32:58,983 | INFO |   ✓ Generation complete (83 chars).
+2026-04-13 12:32:58,984 | INFO | ▶ [Node 3] evaluate  |  constraints: 'Level 2'  |  source: ast
+2026-04-13 12:32:58,984 | INFO |   [API Pacing] Pausing 5s to respect Groq rate limits …
+2026-04-13 12:33:04,158 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:33:04,159 | INFO | Retrying request to /openai/v1/chat/completions in 2.000000 seconds
+2026-04-13 12:33:06,894 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:33:06,898 | INFO |   Evaluator verdict → spatial_match=True | reason: The answer correctly states there are no matching assets on Level 2 per deterministic IFC data.
+2026-04-13 12:33:06,899 | INFO | ============================================================
+2026-04-13 12:33:06,899 | INFO | BIM-Graph Pipeline COMPLETE
+2026-04-13 12:33:06,900 | INFO | ============================================================

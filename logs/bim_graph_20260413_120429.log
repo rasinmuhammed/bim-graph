@@ -1,0 +1,27 @@
+2026-04-13 12:04:29,146 | INFO | Audit log initialised → /Users/muhammedrasin/bim-graph/logs/bim_graph_20260413_120429.log
+2026-04-13 12:04:29,151 | INFO | ============================================================
+2026-04-13 12:04:29,151 | INFO | BIM-Graph Pipeline START
+2026-04-13 12:04:29,151 | INFO | Query: List all equipment and mechanical assets located specifically on level 2
+2026-04-13 12:04:29,151 | INFO | ============================================================
+2026-04-13 12:04:29,153 | INFO | ▶ [Node 0] extract_spatial_constraints  |  query: 'List all equipment and mechanical assets located specifically on level 2'
+2026-04-13 12:04:29,744 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:04:29,765 | INFO |   ✓ Extracted spatial constraint: 'Level 2'
+2026-04-13 12:04:29,767 | INFO | ▶ [Node 1] retrieve_dense  |  query: 'List all equipment and mechanical assets located specifically on level 2'
+2026-04-13 12:04:29,858 | INFO |   Embedding query via Ollama nomic-embed-text …
+2026-04-13 12:04:30,389 | INFO | HTTP Request: POST http://127.0.0.1:11434/api/embed "HTTP/1.1 200 OK"
+2026-04-13 12:04:30,406 | INFO |   ✓ Retrieved 5 chunks from ChromaDB.
+2026-04-13 12:04:30,412 | INFO | ▶ [Node 2] generate  |  context chunks: 5
+2026-04-13 12:04:31,299 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:04:31,304 | INFO |   ✓ Generation complete (241 chars).
+2026-04-13 12:04:31,305 | INFO | ▶ [Node 3] evaluate  |  spatial_constraints: 'Level 2'
+2026-04-13 12:04:31,995 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:04:31,996 | INFO |   Evaluator verdict → spatial_match=False
+2026-04-13 12:04:31,996 | WARNING |   ⚠  Spatial mismatch: Answer admits it cannot determine which floor assets belong to due to missing spatial information.
+2026-04-13 12:04:31,996 | WARNING |   ↳  Self-healing will trigger (spatial_ast_retrieval).
+2026-04-13 12:04:31,997 | INFO | ▶ [Node 4] spatial_ast_retrieval  |  target storey: 'Level 2'
+2026-04-13 12:04:32,119 | INFO |   Matched IFC storey: 'Level 2'  (GUID: 1xS3BCk291UvhgP2dvNMQJ)
+2026-04-13 12:04:32,120 | INFO |   ✓ Extracted 73 elements from storey 'Level 2' via AST traversal.
+2026-04-13 12:04:32,121 | INFO |   Correction log entry #1 appended.
+2026-04-13 12:04:32,140 | INFO | ▶ [Node 2] generate  |  context chunks: 73
+2026-04-13 12:04:32,298 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:04:32,298 | INFO | Retrying request to /openai/v1/chat/completions in 23.000000 seconds

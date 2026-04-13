@@ -1,0 +1,45 @@
+2026-04-13 12:35:56,764 | INFO | Audit log initialised → /Users/muhammedrasin/bim-graph/logs/bim_graph_20260413_123556.log
+2026-04-13 12:35:56,771 | INFO | ============================================================
+2026-04-13 12:35:56,771 | INFO | BIM-Graph Pipeline START
+2026-04-13 12:35:56,771 | INFO | Query: List all doors and walls located specifically on level 2
+2026-04-13 12:35:56,771 | INFO | ============================================================
+2026-04-13 12:35:56,774 | INFO | ▶ [Node 0] extract_spatial_constraints  |  query: 'List all doors and walls located specifically on level 2'
+2026-04-13 12:35:57,178 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:35:57,201 | INFO |   ✓ Extracted spatial constraint: 'Level 2'
+2026-04-13 12:35:57,203 | INFO | ▶ [Node 1] retrieve_dense  |  query: 'List all doors and walls located specifically on level 2'
+2026-04-13 12:35:57,343 | INFO |   Embedding query via Ollama nomic-embed-text …
+2026-04-13 12:35:57,441 | INFO | HTTP Request: POST http://127.0.0.1:11434/api/embed "HTTP/1.1 200 OK"
+2026-04-13 12:35:57,459 | INFO |   ✓ Retrieved 5 chunks from ChromaDB.
+2026-04-13 12:35:57,461 | INFO | ▶ [Node 2] generate  |  context chunks: 5  |  source: dense
+2026-04-13 12:35:57,461 | INFO |   [API Pacing] Pausing 5s to respect Groq rate limits …
+2026-04-13 12:36:03,764 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:36:03,768 | INFO |   ✓ Generation complete (640 chars).
+2026-04-13 12:36:03,770 | INFO | ▶ [Node 3] evaluate  |  constraints: 'Level 2'  |  source: dense
+2026-04-13 12:36:03,770 | INFO |   [API Pacing] Pausing 5s to respect Groq rate limits …
+2026-04-13 12:36:09,772 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:36:09,776 | INFO |   Evaluator verdict → spatial_match=False | reason: The answer states the context lacks spatial hierarchy details required to confirm asset locations on 'Level 2', and explicitly denies associations between doors/walls and the specified floor.
+2026-04-13 12:36:09,776 | WARNING |   ⚠  Spatial mismatch on dense retrieval: The answer states the context lacks spatial hierarchy details required to confirm asset locations on 'Level 2', and explicitly denies associations between doors/walls and the specified floor.
+2026-04-13 12:36:09,776 | WARNING |   ↳  Self-healing will trigger (spatial_ast_retrieval).
+2026-04-13 12:36:09,777 | INFO | ▶ [Node 4] spatial_ast_retrieval  |  target storey: 'Level 2'  |  equipment_filter: False
+2026-04-13 12:36:09,934 | INFO |   Matched IFC storey: 'Level 2'  (GUID: 1xS3BCk291UvhgP2dvNMQJ)
+2026-04-13 12:36:09,935 | INFO |   ✓ Extracted 73 elements from storey 'Level 2' (filter: ALL elements | total on floor: 73 | MEP: 0 | arch: 73).
+2026-04-13 12:36:09,935 | INFO |   Correction log entry #1 appended. Loop count now: 1
+2026-04-13 12:36:09,956 | INFO | ▶ [Node 2] generate  |  context chunks: 74  |  source: ast
+2026-04-13 12:36:09,956 | INFO |   [API Pacing] Pausing 5s to respect Groq rate limits …
+2026-04-13 12:36:15,133 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:36:15,134 | INFO | Retrying request to /openai/v1/chat/completions in 5.000000 seconds
+2026-04-13 12:36:24,542 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:36:24,549 | INFO |   ✓ Generation complete (2899 chars).
+2026-04-13 12:36:24,554 | INFO | ▶ [Node 3] evaluate  |  constraints: 'Level 2'  |  source: ast
+2026-04-13 12:36:24,554 | INFO |   [API Pacing] Pausing 5s to respect Groq rate limits …
+2026-04-13 12:36:29,726 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:36:29,727 | INFO | Retrying request to /openai/v1/chat/completions in 17.000000 seconds
+2026-04-13 12:36:46,879 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-04-13 12:36:46,883 | INFO | Retrying request to /openai/v1/chat/completions in 16.000000 seconds
+2026-04-13 12:37:06,090 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 12:37:06,097 | INFO |   Evaluator verdict → spatial_match=False | reason: The answer lists specific assets but does not explicitly confirm they are on Level 2. The floor placement is implied by the data source, but the answer itself lacks explicit confirmation of floor association for the listed assets.
+2026-04-13 12:37:06,098 | WARNING |   ⚠  AST generation failed to produce concrete answer: The answer lists specific assets but does not explicitly confirm they are on Level 2. The floor placement is implied by the data source, but the answer itself lacks explicit confirmation of floor association for the listed assets.
+2026-04-13 12:37:06,098 | WARNING |   ↳  Routing to END (AST is deterministic — no further retrieval possible).
+2026-04-13 12:37:06,102 | INFO | ============================================================
+2026-04-13 12:37:06,103 | INFO | BIM-Graph Pipeline COMPLETE
+2026-04-13 12:37:06,103 | INFO | ============================================================
