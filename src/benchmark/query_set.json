@@ -1,0 +1,72 @@
+[
+  {
+    "id": "Q01",
+    "query": "List all walls and partitions located on Level 1",
+    "target_floor": "Level 1",
+    "expected_ifc_type": "IfcWall",
+    "description": "Broad architectural query — Level 1"
+  },
+  {
+    "id": "Q02",
+    "query": "What doors are installed on Level 2?",
+    "target_floor": "Level 2",
+    "expected_ifc_type": "IfcDoor",
+    "description": "Specific element type query — Level 2"
+  },
+  {
+    "id": "Q03",
+    "query": "List all structural and architectural elements found on Level 2",
+    "target_floor": "Level 2",
+    "expected_ifc_type": null,
+    "description": "Broad floor query — Level 2"
+  },
+  {
+    "id": "Q04",
+    "query": "What building elements are located at the foundation level (T/FDN)?",
+    "target_floor": "T/FDN",
+    "expected_ifc_type": null,
+    "description": "Below-ground foundation query"
+  },
+  {
+    "id": "Q05",
+    "query": "List every wall on the roof level",
+    "target_floor": "Roof",
+    "expected_ifc_type": "IfcWall",
+    "description": "Roof-level query"
+  },
+  {
+    "id": "Q06",
+    "query": "Which floors contain interior partition walls and how many are on each floor?",
+    "target_floor": null,
+    "expected_ifc_type": "IfcWallStandardCase",
+    "description": "Multi-floor aggregation query — no single target floor"
+  },
+  {
+    "id": "Q07",
+    "query": "Show me all columns and slabs on Level 1",
+    "target_floor": "Level 1",
+    "expected_ifc_type": "IfcColumn",
+    "description": "Structural element query — tests hallucination when element type is absent"
+  },
+  {
+    "id": "Q08",
+    "query": "What windows are installed on Level 2?",
+    "target_floor": "Level 2",
+    "expected_ifc_type": "IfcWindow",
+    "description": "Opening element query — Level 2"
+  },
+  {
+    "id": "Q09",
+    "query": "List all doors and openings on the foundation level",
+    "target_floor": "T/FDN",
+    "expected_ifc_type": "IfcDoor",
+    "description": "Foundation-level door query"
+  },
+  {
+    "id": "Q10",
+    "query": "What building elements exist on the roof? Give me the complete list.",
+    "target_floor": "Roof",
+    "expected_ifc_type": null,
+    "description": "Exhaustive roof query"
+  }
+]

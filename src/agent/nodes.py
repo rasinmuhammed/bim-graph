@@ -5,6 +5,7 @@ import logging
 import pathlib
 import chromadb
 import ifcopenshell
+import pickle
 from datetime import datetime
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
@@ -19,6 +20,7 @@ _PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 IFC_PATH      = str(_PROJECT_ROOT / "data" / "Duplex_A_20110907.ifc")
 _CHROMA_PATH  = str(_PROJECT_ROOT / "data" / "chroma_db")
 _LOGS_PATH    = str(_PROJECT_ROOT / "logs")
+_BM25_PATH    = _PROJECT_ROOT / "data" / "bm25_index.pkl"
 
 # Fast model for constraint extraction (no thinking tokens, near-instant)
 _LLM_MODEL     = "llama-3.1-8b-instant"
@@ -67,6 +69,10 @@ _EQUIPMENT_KEYWORDS: set[str] = {
     "duct", "pipe", "pump", "fan", "valve", "terminal", "fixture",
     "asset", "system", "mep", "air", "water", "sensor", "actuator",
 }
+
+# Token-budget guards — Groq free tier TPM limit for qwen3-32b is 6000 tokens
+_MAX_AST_ELEMENTS   = 40    # Max elements passed from AST traversal to the LLM
+_MAX_CONTEXT_CHARS  = 3500  # Hard character cap on the context string
 
 # ── Audit Logger Setup ─────────────────────────────────────────────────────────
 os.makedirs(_LOGS_PATH, exist_ok=True)
@@ -152,26 +158,66 @@ def extract_spatial_constraints(state: BIMGraphState) -> dict:
 
 
 # ── Node 1 ─────────────────────────────────────────────────────────────────────
-def retrieve_dense(state: BIMGraphState) -> dict:
+def retrieve_hybrid(state: BIMGraphState) -> dict:
     """
-    Baseline semantic search against ChromaDB using nomic-embed-text embeddings.
-    This is the 'naive' retrieval that intentionally loses spatial hierarchy —
-    it exists to prove the baseline failure for the paper.
+    Hybrid retriever: BM25 (lexical) + ChromaDB (vector) merged via
+    Reciprocal Rank Fusion (RRF).
+
+    RRF score = Σ  1 / (rank_i + 60)
+
+    Top-5 fused documents are returned as context for Node 2.
+    Falls back to dense-only if the BM25 index is missing.
     """
-    logger.info("▶ [Node 1] retrieve_dense  |  query: %r", state["query"])
+    query = state["query"]
+    logger.info("▶ [Node 1] retrieve_hybrid  |  query: %r", query[:80])
 
-    client     = chromadb.PersistentClient(path=_CHROMA_PATH)
-    collection = client.get_or_create_collection(name="bim_baseline")
-    embedder   = OllamaEmbeddings(model="nomic-embed-text")
-
+    # ── Dense retrieval (ChromaDB) ─────────────────────────────────────────
     logger.info("  Embedding query via Ollama nomic-embed-text …")
-    query_vector = embedder.embed_query(state["query"])
+    client       = chromadb.PersistentClient(path=_CHROMA_PATH)
+    collection   = client.get_or_create_collection(name="bim_baseline")
+    embedder     = OllamaEmbeddings(model="nomic-embed-text")
+    query_vector = embedder.embed_query(query)
 
-    results = collection.query(query_embeddings=[query_vector], n_results=5)
-    docs    = results["documents"][0]
+    dense_results = collection.query(
+        query_embeddings=[query_vector],
+        n_results=10,
+        include=["documents"],
+    )
+    dense_docs = dense_results["documents"][0]
 
-    logger.info("  ✓ Retrieved %d chunks from ChromaDB.", len(docs))
-    return {"retrieved_nodes": docs, "retrieval_source": "dense"}
+    # ── BM25 retrieval ─────────────────────────────────────────────────────
+    bm25_docs: list[str] = []
+    if _BM25_PATH.exists():
+        with open(_BM25_PATH, "rb") as f:
+            payload = pickle.load(f)
+        bm25   = payload["bm25"]
+        corpus = payload["corpus"]
+
+        tokenised_query = query.lower().split()
+        scores          = bm25.get_scores(tokenised_query)
+        top_indices     = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:10]
+        bm25_docs       = [corpus[i] for i in top_indices]
+        logger.info("  BM25 top-10 retrieved (%d docs in index).", len(corpus))
+    else:
+        logger.warning("  BM25 index not found at %s — using dense-only.", _BM25_PATH)
+
+    # ── Reciprocal Rank Fusion ─────────────────────────────────────────────
+    K        = 60
+    rrf_map: dict[str, float] = {}
+
+    for rank, doc in enumerate(dense_docs):
+        rrf_map[doc] = rrf_map.get(doc, 0.0) + 1.0 / (rank + K)
+    for rank, doc in enumerate(bm25_docs):
+        rrf_map[doc] = rrf_map.get(doc, 0.0) + 1.0 / (rank + K)
+
+    fused    = sorted(rrf_map.items(), key=lambda x: x[1], reverse=True)[:5]
+    top_docs = [doc for doc, _ in fused]
+
+    mode = "hybrid: bm25+vector" if bm25_docs else "dense-only"
+    logger.info("  ✓ Retrieved %d chunks [%s].", len(top_docs), mode)
+
+    return {"retrieved_nodes": top_docs, "retrieval_source": "dense"}
+
 
 
 # ── Node 2 ─────────────────────────────────────────────────────────────────────
@@ -189,7 +235,7 @@ def generate(state: BIMGraphState) -> dict:
         source,
     )
 
-    context = "\n".join(state["retrieved_nodes"])
+    context = "\n".join(state["retrieved_nodes"])[:_MAX_CONTEXT_CHARS]
 
     if source == "ast":
         prompt = f"""You are a BIM analyst reviewing deterministic IFC data.
@@ -378,6 +424,14 @@ def spatial_ast_retrieval(state: BIMGraphState) -> dict:
         else:
             selected     = all_elements
             filter_label = "ALL elements"
+
+        # Cap elements to stay within Groq's token budget
+        if len(selected) > _MAX_AST_ELEMENTS:
+            logger.info(
+                "  Capping context from %d → %d elements (TPM budget).",
+                len(selected), _MAX_AST_ELEMENTS,
+            )
+            selected = selected[:_MAX_AST_ELEMENTS]
 
         context_lines.extend(selected)
 

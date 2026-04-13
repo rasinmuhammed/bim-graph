@@ -1,0 +1,24 @@
+2026-04-13 22:58:19,182 | INFO | Audit log initialised → /Users/muhammedrasin/bim-graph/logs/bim_graph_20260413_225819.log
+2026-04-13 22:58:19,191 | INFO | ============================================================
+2026-04-13 22:58:19,192 | INFO | BIM-Graph Pipeline START
+2026-04-13 22:58:19,192 | INFO | Query: List all doors and walls located specifically on level 2
+2026-04-13 22:58:19,192 | INFO | ============================================================
+2026-04-13 22:58:19,195 | INFO | ▶ [Node 0] extract_spatial_constraints  |  query: 'List all doors and walls located specifically on level 2'
+2026-04-13 22:58:19,521 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 22:58:19,538 | INFO |   ✓ Extracted spatial constraint: 'Level 2'
+2026-04-13 22:58:19,539 | INFO | ▶ [Node 1] retrieve_hybrid  |  query: 'List all doors and walls located specifically on level 2'
+2026-04-13 22:58:19,539 | INFO | Embedding query via Ollama nomic-embed-text...
+2026-04-13 22:58:19,811 | INFO | HTTP Request: POST http://127.0.0.1:11434/api/embed "HTTP/1.1 200 OK"
+2026-04-13 22:58:19,839 | INFO | BM25 top-10 retrieved (64 docs in index).
+2026-04-13 22:58:19,839 | INFO | Retrieved 5 chunks [hybrid: bm25+vector].
+2026-04-13 22:58:19,840 | INFO | ▶ [Node 2] generate  |  context chunks: 5  |  source: dense
+2026-04-13 22:58:19,840 | INFO |   [API Pacing] Pausing 5s to respect Groq rate limits …
+2026-04-13 22:58:26,340 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 22:58:26,419 | INFO |   ✓ Generation complete (484 chars).
+2026-04-13 22:58:26,426 | INFO | ▶ [Node 3] evaluate  |  constraints: 'Level 2'  |  source: dense
+2026-04-13 22:58:26,426 | INFO |   [API Pacing] Pausing 5s to respect Groq rate limits …
+2026-04-13 22:58:32,497 | INFO | HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-13 22:58:32,502 | INFO |   Evaluator verdict → spatial_match=True | reason: The answer explicitly confirms no IfcDoor/IfcWall assets are assigned to Level 2, and lists specific asset types (IfcFurnishingElements) present without floor ambiguity.
+2026-04-13 22:58:32,506 | INFO | ============================================================
+2026-04-13 22:58:32,506 | INFO | BIM-Graph Pipeline COMPLETE
+2026-04-13 22:58:32,506 | INFO | ============================================================

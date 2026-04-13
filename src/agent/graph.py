@@ -2,7 +2,7 @@ from langgraph.graph import StateGraph, END
 from state import BIMGraphState
 from nodes import (
     extract_spatial_constraints,
-    retrieve_dense,
+    retrieve_hybrid,
     generate,
     evaluate,
     spatial_ast_retrieval,
@@ -30,15 +30,15 @@ builder = StateGraph(BIMGraphState)
 
 # Register all nodes
 builder.add_node("extract_spatial_constraints", extract_spatial_constraints)
-builder.add_node("retrieve_dense",              retrieve_dense)
+builder.add_node("retrieve_hybrid",             retrieve_hybrid)
 builder.add_node("generate",                    generate)
 builder.add_node("evaluate",                    evaluate)
 builder.add_node("spatial_ast_retrieval",       spatial_ast_retrieval)
 
 # Wire the edges
 builder.set_entry_point("extract_spatial_constraints")
-builder.add_edge("extract_spatial_constraints", "retrieve_dense")
-builder.add_edge("retrieve_dense",              "generate")
+builder.add_edge("extract_spatial_constraints", "retrieve_hybrid")
+builder.add_edge("retrieve_hybrid",             "generate")
 builder.add_edge("generate",                    "evaluate")
 builder.add_conditional_edges("evaluate",       should_self_heal)
 builder.add_edge("spatial_ast_retrieval",       "generate")

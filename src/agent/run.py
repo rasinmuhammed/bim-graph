@@ -1,6 +1,13 @@
+import sys
 import json
+import pathlib
 import logging
-from graph import graph
+
+# ── Path bootstrap: must happen BEFORE any local module imports ────────────────
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+
+from graph import graph                            # noqa: E402
+from cache.redis_cache import cache_get, cache_set  # noqa: E402
 
 logger = logging.getLogger("bim_graph.audit")
 
@@ -14,6 +21,13 @@ def main() -> None:
     logger.info("Query: %s", QUERY)
     logger.info("=" * 60)
 
+    # Cache is keyed on query alone at lookup time (floor not yet extracted)
+    cached = cache_get(QUERY, "")
+    if cached:
+        print("\n⚡ CACHE HIT — skipping pipeline")
+        print(cached["answer"])
+        return
+
     result = graph.invoke({
         "query":               QUERY,
         "spatial_constraints": "",     # Node 0 (extract_spatial_constraints) fills this
@@ -24,6 +38,13 @@ def main() -> None:
         "loop_count":          0,
         "retrieval_source":    "",     # set to "dense" or "ast" by retrieval nodes
     })
+
+    cache_set(
+        QUERY,
+        result.get("spatial_constraints", ""),
+        result.get("generation", ""),
+        result.get("correction_log", []),
+    )
 
     logger.info("=" * 60)
     logger.info("BIM-Graph Pipeline COMPLETE")

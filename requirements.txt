@@ -7,3 +7,10 @@ langchain-community
 rank-bm25
 langchain-groq
 langchain-ollama
+
+rank-bm25 
+redis 
+fakeredis 
+fastapi 
+uvicorn[standard] 
+tiktoken
