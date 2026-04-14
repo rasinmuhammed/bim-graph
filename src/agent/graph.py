@@ -26,6 +26,16 @@ def should_self_heal(state: BIMGraphState) -> str:
     return END
 
 
+def route_after_extraction(state: BIMGraphState) -> str:
+    """
+    Early Router: If the query demands an exhaustive inventory, bypass dense retrieval
+    entirely and route straight to deterministic AST. Saves tokens and latency.
+    """
+    if state.get("is_inventory_query") and state.get("spatial_constraints"):
+        return "spatial_ast_retrieval"
+    return "retrieve_hybrid"
+
+
 builder = StateGraph(BIMGraphState)
 
 # Register all nodes
@@ -37,7 +47,7 @@ builder.add_node("spatial_ast_retrieval",       spatial_ast_retrieval)
 
 # Wire the edges
 builder.set_entry_point("extract_spatial_constraints")
-builder.add_edge("extract_spatial_constraints", "retrieve_hybrid")
+builder.add_conditional_edges("extract_spatial_constraints", route_after_extraction)
 builder.add_edge("retrieve_hybrid",             "generate")
 builder.add_edge("generate",                    "evaluate")
 builder.add_conditional_edges("evaluate",       should_self_heal)

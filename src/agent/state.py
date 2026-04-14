@@ -9,10 +9,11 @@ class CorrectionEntry(TypedDict):
 class BIMGraphState(TypedDict):
     query: str
     spatial_constraints: str
+    is_inventory_query: bool
     retrieved_nodes: list[str]
     generation: str
     evaluator_feedback: dict
     correction_log: list[CorrectionEntry]
     loop_count: int
     retrieval_source: str   # "dense" | "ast" | ""
-    
+    ifc_filename: str

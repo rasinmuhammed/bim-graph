@@ -17,15 +17,14 @@ load_dotenv()
 
 # ── Paths (absolute, works regardless of CWD) ─────────────────────────────────
 _PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
-IFC_PATH      = str(_PROJECT_ROOT / "data" / "Duplex_A_20110907.ifc")
 _CHROMA_PATH  = str(_PROJECT_ROOT / "data" / "chroma_db")
 _LOGS_PATH    = str(_PROJECT_ROOT / "logs")
 _BM25_PATH    = _PROJECT_ROOT / "data" / "bm25_index.pkl"
 
 # Fast model for constraint extraction (no thinking tokens, near-instant)
-_LLM_MODEL     = "llama-3.1-8b-instant"
+_LLM_MODEL     = "llama-3.3-70b-versatile"
 # Full model for generation and evaluation
-_LLM_MODEL_BIG = "qwen/qwen3-32b"
+_LLM_MODEL_BIG = "llama-3.3-70b-versatile"
 
 # ── IFC domain knowledge ───────────────────────────────────────────────────────
 # Entity types that represent MEP / mechanical / equipment assets in IFC schema
@@ -70,9 +69,9 @@ _EQUIPMENT_KEYWORDS: set[str] = {
     "asset", "system", "mep", "air", "water", "sensor", "actuator",
 }
 
-# Token-budget guards — Groq free tier TPM limit for qwen3-32b is 6000 tokens
-_MAX_AST_ELEMENTS   = 40    # Max elements passed from AST traversal to the LLM
-_MAX_CONTEXT_CHARS  = 3500  # Hard character cap on the context string
+# Token-budget guards — Groq Llama-3.3-70b-versatile has a large context window
+_MAX_AST_ELEMENTS   = 1000    # Max elements passed from AST traversal to the LLM
+_MAX_CONTEXT_CHARS  = 30000   # Hard character cap on the context string
 
 # ── Audit Logger Setup ─────────────────────────────────────────────────────────
 os.makedirs(_LOGS_PATH, exist_ok=True)
@@ -99,6 +98,13 @@ class ConstraintOutput(BaseModel):
             "The floor, level, or zone reference extracted verbatim from the query. "
             "Examples: 'Level 2', 'Floor 3', 'Ground Floor', 'Basement'. "
             "Return an empty string if the query mentions no specific floor or level."
+        )
+    )
+    is_inventory_query: bool = Field(
+        default=False,
+        description=(
+            "Set to True ONLY if the query asks for an exhaustive list, inventory, or 'what is present'. "
+            "Set to False for specific targeted questions like 'Where is boiler X?' or 'Does Level 2 have any doors?'."
         )
     )
 
@@ -144,17 +150,20 @@ def extract_spatial_constraints(state: BIMGraphState) -> dict:
     )
 
     prompt = (
-        f'Extract the floor, level, or zone reference from this BIM query.\n'
+        f'Analyze this BIM query:\n'
         f'Query: "{state["query"]}"\n\n'
-        f'Return the exact label as written in the query (e.g. "Level 2", "Floor 3", '
-        f'"Ground Floor"). Return an empty string if no floor is mentioned.'
+        f'1. Extract the exact floor, level, or zone reference (e.g. "Level 2"). Return empty string if none.\n'
+        f'2. Determine if this is an inventory query (e.g. "What is present?", "List all...") requiring an exhaustive list.'
     )
 
     llm    = ChatGroq(model=_LLM_MODEL, api_key=os.getenv("GROQ_API_KEY"))
     result = llm.with_structured_output(ConstraintOutput).invoke(prompt)
 
-    logger.info("  ✓ Extracted spatial constraint: %r", result.spatial_constraints)
-    return {"spatial_constraints": result.spatial_constraints}
+    logger.info("  ✓ Extracted spatial constraint: %r (Inventory: %s)", result.spatial_constraints, result.is_inventory_query)
+    return {
+        "spatial_constraints": result.spatial_constraints,
+        "is_inventory_query": result.is_inventory_query
+    }
 
 
 # ── Node 1 ─────────────────────────────────────────────────────────────────────
@@ -177,13 +186,16 @@ def retrieve_hybrid(state: BIMGraphState) -> dict:
     collection   = client.get_or_create_collection(name="bim_baseline")
     embedder     = OllamaEmbeddings(model="nomic-embed-text")
     query_vector = embedder.embed_query(query)
+    
+    ifc_filename = state.get("ifc_filename")
 
     dense_results = collection.query(
         query_embeddings=[query_vector],
         n_results=10,
+        where={"file_name": ifc_filename} if ifc_filename else None,
         include=["documents"],
     )
-    dense_docs = dense_results["documents"][0]
+    dense_docs = dense_results["documents"][0] if dense_results["documents"] else []
 
     # ── BM25 retrieval ─────────────────────────────────────────────────────
     bm25_docs: list[str] = []
@@ -192,10 +204,18 @@ def retrieve_hybrid(state: BIMGraphState) -> dict:
             payload = pickle.load(f)
         bm25   = payload["bm25"]
         corpus = payload["corpus"]
+        metas  = payload.get("metas", [])
 
         tokenised_query = query.lower().split()
         scores          = bm25.get_scores(tokenised_query)
-        top_indices     = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:10]
+        
+        # Filter scores by ifc_filename
+        filtered_indices = []
+        for i in range(len(scores)):
+             if not ifc_filename or (metas and i < len(metas) and metas[i].get("file_name") == ifc_filename) or not metas:
+                  filtered_indices.append(i)
+                  
+        top_indices     = sorted(filtered_indices, key=lambda i: scores[i], reverse=True)[:10]
         bm25_docs       = [corpus[i] for i in top_indices]
         logger.info("  BM25 top-10 retrieved (%d docs in index).", len(corpus))
     else:
@@ -251,10 +271,11 @@ Context (spatially verified IFC AST data):
 Query: {state["query"]}
 
 Instructions:
-1. Using the IFC type guide above, identify which entities in the context match the query.
-2. List EVERY matching asset. For each one output a line: Entity Type | Name | GUID
+1. If the query asks for specific equipment, use the IFC type guide to identify matches. 
+   If the query asks 'What is present?', 'List all', or implies a general floor inventory, YOU MUST LIST EVERY SINGLE ENTITY in the context, regardless of the guide.
+2. For each matching asset, output a line: [Entity Type] | [Name] | [GUID]
 3. Do NOT say "I cannot determine" or "insufficient data" — the spatial data is already verified.
-4. If the context truly contains zero entities of the requested type, respond with exactly:
+4. If the context truly contains zero entities matching the user's specific request, respond with exactly:
    "No matching assets of the requested type were found on this floor in the IFC model."
 
 Answer:"""
@@ -272,7 +293,7 @@ Query: {state["query"]}
 Answer:"""
 
     logger.info("  [API Pacing] Pausing 5s to respect Groq rate limits …")
-    time.sleep(5)
+
     llm      = ChatGroq(model=_LLM_MODEL_BIG, api_key=os.getenv("GROQ_API_KEY"))
     response = llm.invoke(prompt)
     # Strip <think>…</think> blocks emitted by qwen3 before the actual answer
@@ -311,9 +332,12 @@ def evaluate(state: BIMGraphState) -> dict:
         )
     else:
         source_context = (
-            f"The answer was generated from chunked semantic search. "
-            f"Be strict: if the answer cannot confidently confirm which floor each asset "
-            f"is on, or if it hedges with 'may be' / 'possibly', mark spatial_match=FALSE."
+            f"The answer was generated from chunked semantic search.\n"
+            f"EXPECTATIONS FOR DENSE SEARCH:\n"
+            f"1. EXHAUSTIVENESS FAILURE: If the user query asks for an inventory (e.g. 'What is present in...', 'List all...', 'Show me every...'), dense search is mathematically guaranteed to miss elements.\n"
+            f"   → In this case, you MUST mark spatial_match=FALSE and state 'Dense search cannot guarantee an exhaustive list' in the reason.\n"
+            f"2. SPATIAL BLINDNESS: If the answer cannot confidently confirm which floor each asset is on, or if it hedges with 'may be' / 'possibly'.\n"
+            f"   → Mark spatial_match=FALSE."
         )
 
     prompt = f"""You are a strict BIM spatial auditor.
@@ -328,7 +352,7 @@ User requested assets specifically on: {state["spatial_constraints"]}
 Evaluate the answer and return your verdict."""
 
     logger.info("  [API Pacing] Pausing 5s to respect Groq rate limits …")
-    time.sleep(5)
+
     llm      = ChatGroq(model=_LLM_MODEL_BIG, api_key=os.getenv("GROQ_API_KEY"))
     result   = llm.with_structured_output(EvaluatorOutput).invoke(prompt)
     feedback = result.model_dump()
@@ -372,7 +396,12 @@ def spatial_ast_retrieval(state: BIMGraphState) -> dict:
         is_equip,
     )
 
-    ifc_model     = ifcopenshell.open(IFC_PATH)
+    ifc_filename = state.get("ifc_filename")
+    if not ifc_filename:
+         logger.error("No IFC filename provided in state.")
+         return {"retrieved_nodes": [], "retrieval_source": "ast", "correction_log": state.get("correction_log", [])}
+         
+    ifc_model     = ifcopenshell.open(str(_PROJECT_ROOT / "data" / ifc_filename))
     target_storey = None
 
     for storey in ifc_model.by_type("IfcBuildingStorey"):
@@ -447,15 +476,15 @@ def spatial_ast_retrieval(state: BIMGraphState) -> dict:
         )
 
     new_loop_count = state.get("loop_count", 0) + 1
+    
+    # Determine why we are running AST Proof (Self-Heal vs Early Route)
+    fb_reason = state["evaluator_feedback"].get("reason", "Spatial mismatch") if state.get("evaluator_feedback") else "Early Routing logic intercepted inventory query."
+    
     correction_entry = {
         "attempt":         new_loop_count,
-        "search_strategy": "spatial_ast",
-        "failure_reason":  state["evaluator_feedback"].get("reason", "Spatial mismatch"),
-        "action_taken": (
-            f"Traversed IFC AST; extracted "
-            f"{'MEP/equipment' if is_equip else 'all'} elements "
-            f"from storey '{target}' only"
-        ),
+        "search_strategy": "deterministic_ifc_ast",
+        "failure_reason":  fb_reason,
+        "action_taken":    "Crawled strictly the required IfcBuildingStorey to guarantee spatial match."
     }
     logger.info(
         "  Correction log entry #%d appended. Loop count now: %d",
