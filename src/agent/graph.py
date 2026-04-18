@@ -1,6 +1,6 @@
 from langgraph.graph import StateGraph, END
-from state import BIMGraphState
-from nodes import (
+from agent.state import BIMGraphState
+from agent.nodes import (
     extract_spatial_constraints,
     retrieve_hybrid,
     generate,

@@ -1,3 +1,4 @@
+import ifcopenshell
 import os
 import re
 import time
@@ -11,20 +12,20 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from langchain_ollama import OllamaEmbeddings
 from langchain_groq import ChatGroq
-from state import BIMGraphState
+from agent.state import BIMGraphState
+from config import settings
 
 load_dotenv()
 
 # ── Paths (absolute, works regardless of CWD) ─────────────────────────────────
-_PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
-_CHROMA_PATH  = str(_PROJECT_ROOT / "data" / "chroma_db")
-_LOGS_PATH    = str(_PROJECT_ROOT / "logs")
-_BM25_PATH    = _PROJECT_ROOT / "data" / "bm25_index.pkl"
+_CHROMA_PATH  = settings.chroma_path
+_LOGS_PATH    = settings.logs_dir
+_BM25_PATH    = pathlib.Path(settings.bm25_path)   # must be Path, not str
 
 # Fast model for constraint extraction (no thinking tokens, near-instant)
-_LLM_MODEL     = "llama-3.3-70b-versatile"
+_LLM_MODEL     = settings.llm_model
 # Full model for generation and evaluation
-_LLM_MODEL_BIG = "llama-3.3-70b-versatile"
+_LLM_MODEL_BIG = settings.llm_model_big
 
 # ── IFC domain knowledge ───────────────────────────────────────────────────────
 # Entity types that represent MEP / mechanical / equipment assets in IFC schema
@@ -70,8 +71,51 @@ _EQUIPMENT_KEYWORDS: set[str] = {
 }
 
 # Token-budget guards — Groq Llama-3.3-70b-versatile has a large context window
-_MAX_AST_ELEMENTS   = 1000    # Max elements passed from AST traversal to the LLM
-_MAX_CONTEXT_CHARS  = 30000   # Hard character cap on the context string
+_MAX_AST_ELEMENTS   = settings.max_ast_elements
+_MAX_CONTEXT_CHARS  = settings.max_context_chars   # fixed: was max_content_chars (typo)
+
+# ── Lazy singletons — initialized on first use, not at import time ────────────
+# This prevents expensive I/O (Ollama load, ChromaDB open, HTTP connections)
+# from running during test collection when nodes.py is merely imported.
+from functools import lru_cache
+
+@lru_cache(maxsize=1)
+def _get_embedder() -> OllamaEmbeddings:
+    return OllamaEmbeddings(model="nomic-embed-text")
+
+@lru_cache(maxsize=1)
+def _get_chroma_collection():
+    client = chromadb.PersistentClient(path=_CHROMA_PATH)
+    return client.get_or_create_collection(name="bim_baseline")
+
+@lru_cache(maxsize=1)
+def _get_llm_fast() -> ChatGroq:
+    return ChatGroq(model=_LLM_MODEL, api_key=os.getenv("GROQ_API_KEY"))
+
+@lru_cache(maxsize=1)
+def _get_llm_big() -> ChatGroq:
+    return ChatGroq(model=_LLM_MODEL_BIG, api_key=os.getenv("GROQ_API_KEY"))
+
+@lru_cache(maxsize=1)
+def _get_bm25_payload() -> dict | None:
+    if not _BM25_PATH.exists():
+        logger.warning("BM25 index not found at %s", _BM25_PATH)
+        return None
+    with open(_BM25_PATH, "rb") as f:
+        payload = pickle.load(f)
+    logger.info("BM25 index loaded: %d docs", len(payload["corpus"]))
+    return payload
+
+# IFC model cache - avoids re-parsing the same file on every AST call
+_ifc_cache: dict[str, ifcopenshell.file] = {}
+
+def _get_ifc(filename: str) -> ifcopenshell.file:
+    """Load IFC file from disk or cache, returning a parsed IfcOpenShell file object."""
+    if filename not in _ifc_cache:
+        path = pathlib.Path(settings.ifc_data_dir) / filename
+        logger.info("Parsing IFC file: %s (first access)", filename)
+        _ifc_cache[filename] = ifcopenshell.open(str(path))
+    return _ifc_cache[filename]
 
 # ── Audit Logger Setup ─────────────────────────────────────────────────────────
 os.makedirs(_LOGS_PATH, exist_ok=True)
@@ -156,7 +200,7 @@ def extract_spatial_constraints(state: BIMGraphState) -> dict:
         f'2. Determine if this is an inventory query (e.g. "What is present?", "List all...") requiring an exhaustive list.'
     )
 
-    llm    = ChatGroq(model=_LLM_MODEL, api_key=os.getenv("GROQ_API_KEY"))
+    llm    = _get_llm_fast()
     result = llm.with_structured_output(ConstraintOutput).invoke(prompt)
 
     logger.info("  ✓ Extracted spatial constraint: %r (Inventory: %s)", result.spatial_constraints, result.is_inventory_query)
@@ -182,29 +226,38 @@ def retrieve_hybrid(state: BIMGraphState) -> dict:
 
     # ── Dense retrieval (ChromaDB) ─────────────────────────────────────────
     logger.info("  Embedding query via Ollama nomic-embed-text …")
-    client       = chromadb.PersistentClient(path=_CHROMA_PATH)
-    collection   = client.get_or_create_collection(name="bim_baseline")
-    embedder     = OllamaEmbeddings(model="nomic-embed-text")
-    query_vector = embedder.embed_query(query)
+    query_vector = _get_embedder().embed_query(query)
     
     ifc_filename = state.get("ifc_filename")
 
-    dense_results = collection.query(
+    # Build metadata filer - narrow retrieval to the right floor when possible
+    where_filter: dict = {"file_name": ifc_filename} if ifc_filename else {}
+
+    floor = state.get("spatial_constraints", "")
+    if floor and ifc_filename:
+        where_filter = {
+            "$and": [
+                {"file_name": {"$eq": ifc_filename}},
+                {"floor": {"$eq": floor}}
+            ]
+        }
+    elif ifc_filename:
+        where_filter = {"file_name": {"$eq": ifc_filename}}
+   
+    dense_results = _get_chroma_collection().query(
         query_embeddings=[query_vector],
         n_results=10,
-        where={"file_name": ifc_filename} if ifc_filename else None,
+        where=where_filter if where_filter else None,
         include=["documents"],
     )
     dense_docs = dense_results["documents"][0] if dense_results["documents"] else []
 
     # ── BM25 retrieval ─────────────────────────────────────────────────────
-    bm25_docs: list[str] = []
-    if _BM25_PATH.exists():
-        with open(_BM25_PATH, "rb") as f:
-            payload = pickle.load(f)
-        bm25   = payload["bm25"]
-        corpus = payload["corpus"]
-        metas  = payload.get("metas", [])
+    bm25_payload = _get_bm25_payload()
+    if bm25_payload is not None:
+        bm25   = bm25_payload["bm25"]
+        corpus = bm25_payload["corpus"]
+        metas  = bm25_payload.get("metas", [])
 
         tokenised_query = query.lower().split()
         scores          = bm25.get_scores(tokenised_query)
@@ -255,7 +308,15 @@ def generate(state: BIMGraphState) -> dict:
         source,
     )
 
-    context = "\n".join(state["retrieved_nodes"])[:_MAX_CONTEXT_CHARS]
+    # Slice at document boundaries, not character boundaries
+    context_parts: list[str] = []
+    char_count = 0
+    for doc in state["retrieved_nodes"]:
+        if char_count + len(doc) > _MAX_CONTEXT_CHARS:
+            break
+        context_parts.append(doc)
+        char_count += len(doc)
+    context = "\n".join(context_parts)
 
     if source == "ast":
         prompt = f"""You are a BIM analyst reviewing deterministic IFC data.
@@ -292,9 +353,7 @@ Query: {state["query"]}
 
 Answer:"""
 
-    logger.info("  [API Pacing] Pausing 5s to respect Groq rate limits …")
-
-    llm      = ChatGroq(model=_LLM_MODEL_BIG, api_key=os.getenv("GROQ_API_KEY"))
+    llm      = _get_llm_big()
     response = llm.invoke(prompt)
     # Strip <think>…</think> blocks emitted by qwen3 before the actual answer
     answer   = re.sub(r"<think>.*?</think>", "", response.content, flags=re.DOTALL).strip()
@@ -351,9 +410,7 @@ User requested assets specifically on: {state["spatial_constraints"]}
 
 Evaluate the answer and return your verdict."""
 
-    logger.info("  [API Pacing] Pausing 5s to respect Groq rate limits …")
-
-    llm      = ChatGroq(model=_LLM_MODEL_BIG, api_key=os.getenv("GROQ_API_KEY"))
+    llm      = _get_llm_big()
     result   = llm.with_structured_output(EvaluatorOutput).invoke(prompt)
     feedback = result.model_dump()
 
@@ -401,17 +458,24 @@ def spatial_ast_retrieval(state: BIMGraphState) -> dict:
          logger.error("No IFC filename provided in state.")
          return {"retrieved_nodes": [], "retrieval_source": "ast", "correction_log": state.get("correction_log", [])}
          
-    ifc_model     = ifcopenshell.open(str(_PROJECT_ROOT / "data" / ifc_filename))
+    ifc_model     = _get_ifc(ifc_filename)
     target_storey = None
 
+    # 1: exact match
     for storey in ifc_model.by_type("IfcBuildingStorey"):
-        if target.lower() in storey.Name.lower():
+        if storey.Name and storey.Name.lower().strip() == target.lower().strip():
             target_storey = storey
-            logger.info(
-                "  Matched IFC storey: %r  (GUID: %s)", storey.Name, storey.GlobalId
-            )
+            logger.info("Exact storey match: %r (GUID: %s)", storey.Name, storey.GlobalId)
             break
 
+    #2: substring fallback (only if exact fails)
+    if target_storey is None:
+        for storey in ifc_model.by_type("IfcBuildingStorey"):
+            if storey.Name and target.lower() in storey.Name.lower():
+                target_storey = storey
+                logger.info("Substring storey match: %r (GUID: %s)", storey.Name, storey.GlobalId)
+                break
+    
     if target_storey is None:
         logger.error("  No storey matching %r found in IFC model.", target)
         context_lines = [f"ERROR: No storey matching '{target}' found in IFC model."]

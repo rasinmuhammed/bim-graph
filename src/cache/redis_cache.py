@@ -9,12 +9,13 @@ import hashlib
 import logging
 import redis
 import fakeredis
+from config import settings
 
 logger = logging.getLogger("bim_graph.cache")
 
-_TTL_SECONDS  = 3600   # 1 hour
-_REDIS_HOST   = "localhost"
-_REDIS_PORT   = 6379
+_TTL_SECONDS  = settings.cache_ttl_seconds
+_REDIS_HOST   = settings.redis_host
+_REDIS_PORT   = settings.redis_port
 
 
 def _get_client():
@@ -32,17 +33,17 @@ def _get_client():
 _client = _get_client()   # singleton
 
 
-def _make_key(query: str, floor: str) -> str:
-    raw = f"{query.lower().strip()}|{floor.lower().strip()}"
+def _make_key(query: str) -> str:
+    raw = query.lower().strip()
     return "bim-graph:" + hashlib.sha256(raw.encode()).hexdigest()
 
 
-def cache_get(query: str, floor: str) -> dict | None:
+def cache_get(query: str) -> dict | None:
     """
     Look up a cached result.
     Returns {"answer": str, "correction_log": list} or None on miss.
     """
-    key  = _make_key(query, floor)
+    key  = _make_key(query)
     data = _client.get(key)
     if data:
         logger.info("  [Cache] ⚡ CACHE HIT  key=%s…", key[-8:])
@@ -51,9 +52,9 @@ def cache_get(query: str, floor: str) -> dict | None:
     return None
 
 
-def cache_set(query: str, floor: str, answer: str, correction_log: list) -> None:
+def cache_set(query: str, answer: str, correction_log: list) -> None:
     """Store a successful result with TTL."""
-    key     = _make_key(query, floor)
+    key     = _make_key(query)
     payload = json.dumps({"answer": answer, "correction_log": correction_log})
     _client.setex(key, _TTL_SECONDS, payload)
     logger.info("  [Cache] Stored  key=%s…  TTL=%ds", key[-8:], _TTL_SECONDS)

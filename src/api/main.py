@@ -33,17 +33,14 @@ _API_DIR      = pathlib.Path(__file__).resolve().parent
 _SRC_DIR      = _API_DIR.parent
 _PROJECT_ROOT = _SRC_DIR.parent
 
-sys.path.insert(0, str(_SRC_DIR / "agent"))  # graph, nodes, state
-sys.path.insert(0, str(_SRC_DIR))             # cache.redis_cache, benchmark.ifc_oracle
-
 from fastapi import FastAPI, Query as QParam, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from graph import graph                                    # noqa: E402
-from cache.redis_cache import cache_get, cache_set         # noqa: E402
-from benchmark.ifc_oracle import list_all_floors                     # noqa: E402
+from agent.graph import graph
+from cache.redis_cache import cache_get, cache_set
+from benchmark.ifc_oracle import list_all_floors
 
 logger = logging.getLogger("bim_graph.api")
 
@@ -170,7 +167,7 @@ async def query_pipeline(req: QueryRequest):
     """
     t0 = time.time()
 
-    cached = cache_get(req.query, "")
+    cached = cache_get(req.query)
     if cached:
         return {
             "answer":              cached["answer"],
@@ -222,7 +219,7 @@ async def query_stream(
         t0 = time.time()
 
         # ── Cache check ────────────────────────────────────────────────────
-        cached = cache_get(q, "")
+        cached = cache_get(q)   
         if cached:
             yield _sse("cache_hit", {
                 "answer":       cached["answer"],

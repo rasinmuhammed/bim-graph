@@ -36,3 +36,4 @@ ui/out/
 .idea/
 .vscode/
 *.swp
+.claude/
