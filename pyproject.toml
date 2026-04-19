@@ -24,6 +24,7 @@ dependencies = [
     "pydantic>=2",
     "pydantic-settings>=2",
     "python-dotenv>=1",
+    "neo4j>=5.19",
 ]
 
 [project.optional-dependencies]

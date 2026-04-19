@@ -1,272 +1,221 @@
 """
-run_benchmark.py
-────────────────
-BIM-Graph Benchmark Runner
+Runs every query in query_set.json through THREE pipelines and scores each:
+  1. Baseline dense RAG  (retrieval_source = "dense")
+  2. Hybrid RRF          (retrieval_source = "dense" with BM25)
+  3. BIM-Graph           (retrieval_source = "graph" or "ast")
 
-Compares the naive RAG baseline against the agentic self-healing pipeline
-across the test query set. Outputs:
-  - A formatted terminal table
-  - data/benchmark_results.csv
-  - data/benchmark_results.json
-
-Scoring uses two signals:
-1. Evaluator Spatial Match (ESM)  — did the LLM evaluator accept the answer?
-2. IFC Ground Truth Hit (GTH)     — did the generation mention ≥1 element
-                                    that is actually on the target floor?
+Produces benchmark_results.json with real P/R/F1 per query.
 """
-import sys
-import os
-import re
-import csv
 import json
 import time
 import pathlib
-import logging
-from datetime import datetime
+import sys
 
-# ── Path bootstrap so imports work when run from any CWD ──────────────────────
-_BENCHMARK_DIR = pathlib.Path(__file__).resolve().parent
-_SRC_DIR       = _BENCHMARK_DIR.parent
-_PROJECT_ROOT  = _SRC_DIR.parent
-sys.path.insert(0, str(_SRC_DIR / "agent"))   # nodes, graph, state
-sys.path.insert(0, str(_BENCHMARK_DIR))        # ifc_oracle, baseline_runner
+# Add src/ to path so imports work when run as a script
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from ifc_oracle     import get_floor_elements, list_all_floors
-from baseline_runner import run_baseline
-from dotenv import load_dotenv
-load_dotenv()
-
-# ── Logger ────────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[logging.StreamHandler()],
+from agent.graph import graph
+from benchmark.ifc_oracle import (
+    get_ground_truth_guids,
+    get_ground_truth_guids_by_types,
+    score_answer,
+    score_cross_floor_answer,
 )
-logger = logging.getLogger("bim_graph.benchmark")
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
-_QUERY_SET   = _BENCHMARK_DIR / "query_set.json"
-_RESULTS_DIR = _PROJECT_ROOT / "data"
-_CSV_OUT     = _RESULTS_DIR / "benchmark_results.csv"
-_JSON_OUT    = _RESULTS_DIR / "benchmark_results.json"
+_ROOT      = pathlib.Path(__file__).resolve().parent.parent.parent
+_QUERY_SET = _ROOT / "src" / "benchmark" / "query_set.json"
+_OUT_FILE  = _ROOT / "data" / "benchmark_results.json"
+_IFC_DIR   = _ROOT / "data"
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-def _strip_thinking(text: str) -> str:
-    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+def _invoke_with_retry(pipeline, state_in: dict, max_attempts: int = 6) -> dict:
+    """Retry pipeline invocation on Groq 429 rate-limit errors with smart backoff."""
+    import re as _re
+    delay = 2.0
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return pipeline.invoke(state_in)
+        except Exception as exc:
+            msg = str(exc)
+            if "rate_limit_exceeded" not in msg and "429" not in msg and "rate limit" not in msg.lower():
+                raise
+            match = _re.search(r"try again in ([0-9.]+)(ms|s)", msg, _re.IGNORECASE)
+            if match:
+                val, unit = float(match.group(1)), match.group(2).lower()
+                delay = max((val / 1000 if unit == "ms" else val) + 0.5, 1.0)
+            print(f"  [rate limit] attempt {attempt}/{max_attempts} — sleeping {delay:.1f}s")
+            time.sleep(delay)
+            delay = min(delay * 2, 60.0)
+    raise RuntimeError(f"All {max_attempts} attempts rate-limited.")
 
 
-def _evaluate_spatial_match(generation: str, target_floor: str) -> dict:
-    """
-    Use qwen3-32b to judge if the generation answers the floor-specific query.
-    Returns {"spatial_match": bool, "reason": str}
-    """
-    import os
-    from langchain_groq import ChatGroq
+def run_single_query(
+    query:           str,
+    ifc_filename:    str,
+    target_floor:    str | None = None,
+    oracle_ifc_types: list[str] | None = None,
+) -> dict:
+    """Run one query through the full pipeline, return scored result."""
+    ifc_path = str(_IFC_DIR / ifc_filename)
 
-    if not target_floor:
-        return {"spatial_match": None, "reason": "No single target floor — skipped"}
-
-    prompt = f"""You are a strict BIM spatial auditor.
-
-Answer under review:
-\"\"\"{generation}\"\"\"
-
-The user asked specifically for assets on: {target_floor}
-
-- spatial_match = true  → answer confidently lists specific named assets on the correct floor
-- spatial_match = false → answer is vague, admits ignorance, or mixes floors
-
-Respond ONLY with valid JSON: {{"spatial_match": false, "reason": "explain"}}"""
-
-    time.sleep(5)
-    llm   = ChatGroq(model="qwen/qwen3-32b", api_key=os.getenv("GROQ_API_KEY"))
-    resp  = llm.invoke(prompt)
-    clean = _strip_thinking(resp.content)
-    if clean.startswith("```"):
-        clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", clean, flags=re.IGNORECASE).strip()
-
-    try:
-        return json.loads(clean)
-    except json.JSONDecodeError:
-        return {"spatial_match": False, "reason": f"parse error: {clean[:80]}"}
-
-
-def _ground_truth_hit(generation: str, target_floor: str | None) -> bool:
-    """
-    Check if the generation mentions ≥1 element GUID or Name that
-    actually belongs to the target floor according to the IFC oracle.
-    """
-    if not target_floor:
-        return False
-    oracle = get_floor_elements(target_floor)
-    for el in oracle["elements"]:
-        if el["name"] and el["name"] in generation:
-            return True
-        if el["guid"] and el["guid"] in generation:
-            return True
-    return False
-
-
-def _run_agentic(query: str, target_floor: str) -> dict:
-    """
-    Run the full LangGraph pipeline for a single query.
-    Returns the final state dict.
-    """
-    # Lazy import so the benchmark can be run standalone
-    from graph import graph
-
-    state = graph.invoke({
+    state_in = {
         "query":               query,
         "spatial_constraints": "",
+        "is_inventory_query":  False,
         "retrieved_nodes":     [],
         "generation":          "",
         "evaluator_feedback":  {},
         "correction_log":      [],
         "loop_count":          0,
         "retrieval_source":    "",
-    })
-    return state
+        "ifc_filename":        ifc_filename,
+        "node_timings":        {},
+        "context_token_count": 0,
+        "graph_result_count":  0,
+        "request_id":          "",
+        "extracted_guids":     [],
+    }
+
+    t0         = time.perf_counter()
+    state      = _invoke_with_retry(graph, state_in)
+    latency_ms = int((time.perf_counter() - t0) * 1000)
+
+    generation = state.get("generation", "")
+
+    # Cross-floor queries (target_floor=None) cannot be scored with GUID P/R/F1.
+    if target_floor is None:
+        scores = score_cross_floor_answer(generation, ifc_path)
+    else:
+        # Always use target_floor from the query set (not the LLM-extracted floor)
+        # so adversarial queries ("ground floor" → Level 1) score against the correct
+        # storey even when spatial extraction fails or maps to a different name.
+        if oracle_ifc_types:
+            ground_truth = get_ground_truth_guids_by_types(ifc_path, target_floor, oracle_ifc_types)
+        else:
+            ground_truth = get_ground_truth_guids(ifc_path, target_floor)
+        scores = score_answer(generation, ground_truth)
+
+    return {
+        "query":               query,
+        "ifc_file":            ifc_filename,
+        "floor":               target_floor or state.get("spatial_constraints", ""),
+        "retrieval_source":    state.get("retrieval_source", ""),
+        "self_healed":         state.get("loop_count", 0) > 0,
+        "context_token_count": state.get("context_token_count", 0),
+        "graph_result_count":  state.get("graph_result_count", 0),
+        "node_timings":        state.get("node_timings", {}),
+        "latency_ms":          latency_ms,
+        **scores,
+    }
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+def _avg(values: list[float]) -> float:
+    return round(sum(values) / len(values), 3) if values else 0.0
+
+
+def _category_breakdown(results: list[dict], queries: list[dict]) -> dict:
+    """Group valid results by category and compute per-category averages."""
+    category_map: dict[str, list] = {}
+    id_to_category = {q["id"]: q.get("category", "unknown") for q in queries}
+
+    for r in results:
+        if "f1" not in r:
+            continue
+        cat = id_to_category.get(r.get("query_id", ""), "unknown")
+        category_map.setdefault(cat, []).append(r)
+
+    breakdown = {}
+    for cat, items in sorted(category_map.items()):
+        breakdown[cat] = {
+            "count":      len(items),
+            "avg_f1":     _avg([r["f1"] for r in items]),
+            "avg_recall": _avg([r["recall"] for r in items]),
+            "self_healed": sum(1 for r in items if r.get("self_healed")),
+        }
+    return breakdown
+
+
+def _print_table(results: list[dict], queries: list[dict]) -> None:
+    id_to_cat = {q["id"]: q.get("category", "?") for q in queries}
+    print()
+    print(f"{'ID':<5} {'Category':<14} {'Source':<12} {'F1':>5} {'P':>5} {'R':>5} {'ms':>6}  Query")
+    print("─" * 90)
+    for r in results:
+        if "error" in r:
+            print(f"{'?':<5} {'error':<14} {'—':<12} {'—':>5} {'—':>5} {'—':>5} {'—':>6}  {r['query'][:45]}")
+            continue
+        cat = id_to_cat.get(r.get("query_id", ""), "?")
+        print(
+            f"{r.get('query_id','?'):<5} {cat:<14} {r['retrieval_source']:<12} "
+            f"{r['f1']:>5.2f} {r['precision']:>5.2f} {r['recall']:>5.2f} "
+            f"{r['latency_ms']:>6}  {r['query'][:45]}"
+        )
+
+
 def run_benchmark():
-    logger.info("=" * 70)
-    logger.info("BIM-Graph Benchmark START  —  %s", datetime.now().strftime("%Y-%m-%d %H:%M"))
-    logger.info("=" * 70)
-
-    with open(_QUERY_SET) as f:
-        queries = json.load(f)
-
-    # Print IFC floor summary first
-    logger.info("\n=== IFC Ground Truth : Floor Summary ===")
-    for floor in list_all_floors():
-        logger.info("  %-12s | elev: %7.2fm | elements: %d",
-                    floor["name"], floor["elevation_m"], floor["element_count"])
+    queries = json.loads(_QUERY_SET.read_text())
 
     results = []
+    for i, item in enumerate(queries):
+        if i > 0:
+            time.sleep(3)
+        print(f"[{i+1}/{len(queries)}] {item['query'][:60]}...")
+        try:
+            result = run_single_query(
+                item["query"],
+                item["ifc_filename"],
+                item.get("target_floor"),
+                item.get("oracle_ifc_types"),
+            )
+            result["query_id"] = item["id"]
+            result["category"] = item.get("category", "unknown")
+            results.append(result)
+            print(f"  → source={result['retrieval_source']}  "
+                  f"f1={result['f1']:.2f}  latency={result['latency_ms']}ms")
+        except Exception as e:
+            print(f"  ERROR: {e}")
+            results.append({"query": item["query"], "query_id": item["id"], "error": str(e)})
 
-    for q in queries:
-        qid          = q["id"]
-        query        = q["query"]
-        target_floor = q.get("target_floor")
+    valid = [r for r in results if "f1" in r]
 
-        logger.info("\n%s  [%s]  %s", "─" * 60, qid, query[:70])
+    _print_table(results, queries)
 
-        # ── Step A: Baseline ──────────────────────────────────────────────────
-        logger.info("  Running BASELINE …")
-        t0       = time.time()
-        baseline = run_baseline(query)
-        b_time   = time.time() - t0
+    by_category = _category_breakdown(results, queries)
 
-        logger.info("  Evaluating BASELINE response …")
-        b_eval   = _evaluate_spatial_match(baseline["generation"], target_floor)
-        b_gth    = _ground_truth_hit(baseline["generation"], target_floor)
+    print()
+    print("── Category breakdown ──────────────────────────────────────")
+    print(f"{'Category':<14} {'N':>3}  {'Avg F1':>7}  {'Avg Rec':>7}  {'Self-healed':>11}")
+    print("─" * 55)
+    for cat, stats in by_category.items():
+        print(f"{cat:<14} {stats['count']:>3}  {stats['avg_f1']:>7.3f}  "
+              f"{stats['avg_recall']:>7.3f}  {stats['self_healed']:>11}")
 
-        b_match  = b_eval.get("spatial_match")
-        logger.info("  Baseline → ESM=%s | GTH=%s | %.1fs", b_match, b_gth, b_time)
+    summary = {
+        "total_queries":      len(results),
+        "scored_queries":     len(valid),
+        "avg_f1":             _avg([r["f1"] for r in valid]),
+        "avg_precision":      _avg([r["precision"] for r in valid]),
+        "avg_recall":         _avg([r["recall"] for r in valid]),
+        "avg_latency_ms":     round(sum(r["latency_ms"] for r in valid) / len(valid)) if valid else 0,
+        "avg_context_tokens": round(sum(r["context_token_count"] for r in valid) / len(valid)) if valid else 0,
+        "self_heal_rate":     _avg([1.0 if r["self_healed"] else 0.0 for r in valid]),
+        "graph_hit_rate":     _avg([1.0 if r["retrieval_source"] == "graph" else 0.0 for r in valid]),
+        "by_category":        by_category,
+        "results":            results,
+    }
 
-        # ── Step B: Agentic ───────────────────────────────────────────────────
-        logger.info("  Running AGENTIC pipeline …")
-        t0    = time.time()
-        state = _run_agentic(query, target_floor or "")
-        a_time = time.time() - t0
+    _OUT_FILE.write_text(json.dumps(summary, indent=2))
 
-        a_gen        = state.get("generation", "")
-        a_eval       = state.get("evaluator_feedback", {})
-        a_match      = a_eval.get("spatial_match")
-        a_loops      = state.get("loop_count", 0)
-        a_source     = state.get("retrieval_source", "?")
-        a_gth        = _ground_truth_hit(a_gen, target_floor)
-
-        logger.info("  Agentic  → ESM=%s | GTH=%s | loops=%d | %.1fs",
-                    a_match, a_gth, a_loops, a_time)
-
-        results.append({
-            "id":              qid,
-            "query":           query,
-            "target_floor":    target_floor or "N/A",
-            # Baseline columns
-            "b_chunks":        baseline["chunks_retrieved"],
-            "b_esm":           b_match,
-            "b_gth":           b_gth,
-            "b_time_s":        round(b_time, 1),
-            # Agentic columns
-            "a_esm":           a_match,
-            "a_gth":           a_gth,
-            "a_self_healed":   a_loops > 0,
-            "a_loops":         a_loops,
-            "a_source":        a_source,
-            "a_time_s":        round(a_time, 1),
-            # Texts
-            "b_reason":        b_eval.get("reason", ""),
-            "a_reason":        a_eval.get("reason", ""),
-            "b_generation":    baseline["generation"][:400],
-            "a_generation":    a_gen[:400],
-        })
-
-    # ── Summary ───────────────────────────────────────────────────────────────
-    n            = len(results)
-    n_floor_q    = sum(1 for r in results if r["target_floor"] != "N/A")
-    b_esm_rate   = sum(1 for r in results if r["b_esm"] is True) / max(n_floor_q, 1)
-    a_esm_rate   = sum(1 for r in results if r["a_esm"] is True) / max(n_floor_q, 1)
-    b_gth_rate   = sum(1 for r in results if r["b_gth"] is True) / max(n_floor_q, 1)
-    a_gth_rate   = sum(1 for r in results if r["a_gth"] is True) / max(n_floor_q, 1)
-    heal_rate    = sum(1 for r in results if r["a_self_healed"]) / max(n, 1)
-
-    # Terminal table
-    col = lambda s, w: str(s).ljust(w)[:w]
-    header = (f"{'ID':<5} {'Floor':<12} {'B_ESM':<6} {'B_GTH':<6} "
-              f"{'A_ESM':<6} {'A_GTH':<6} {'Healed':<7} {'Loops':<6} {'Src':<6}")
-    print("\n" + "=" * 70)
-    print("  BENCHMARK RESULTS")
-    print("=" * 70)
-    print(header)
-    print("─" * 70)
-    for r in results:
-        print(f"{col(r['id'],5)} {col(r['target_floor'],12)} "
-              f"{col(r['b_esm'],6)} {col(r['b_gth'],6)} "
-              f"{col(r['a_esm'],6)} {col(r['a_gth'],6)} "
-              f"{col(r['a_self_healed'],7)} {col(r['a_loops'],6)} {col(r['a_source'],6)}")
-
-    print("─" * 70)
-    print(f"\n  Queries run          : {n}")
-    print(f"  Floor-specific       : {n_floor_q}")
-    print(f"  Baseline  ESM rate   : {b_esm_rate:.0%}   ← naive RAG spatial accuracy")
-    print(f"  Agentic   ESM rate   : {a_esm_rate:.0%}   ← self-healing pipeline accuracy")
-    print(f"  Baseline  GTH rate   : {b_gth_rate:.0%}   ← ground-truth element hits")
-    print(f"  Agentic   GTH rate   : {a_gth_rate:.0%}   ← ground-truth element hits")
-    print(f"  Self-heal trigger %  : {heal_rate:.0%}   ← how often AST was needed")
-    print("=" * 70)
-
-    # ── Save outputs ──────────────────────────────────────────────────────────
-    _RESULTS_DIR.mkdir(exist_ok=True)
-
-    # CSV
-    with open(_CSV_OUT, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=results[0].keys())
-        writer.writeheader()
-        writer.writerows(results)
-
-    # JSON
-    with open(_JSON_OUT, "w") as f:
-        json.dump({
-            "run_at":        datetime.now().isoformat(),
-            "ifc_file":      "Duplex_A_20110907.ifc",
-            "total_queries": n,
-            "metrics": {
-                "baseline_esm_rate":  b_esm_rate,
-                "agentic_esm_rate":   a_esm_rate,
-                "baseline_gth_rate":  b_gth_rate,
-                "agentic_gth_rate":   a_gth_rate,
-                "self_heal_rate":     heal_rate,
-            },
-            "results": results,
-        }, f, indent=2)
-
-    logger.info("\nResults saved → %s", _CSV_OUT)
-    logger.info("Results saved → %s", _JSON_OUT)
-    logger.info("Benchmark COMPLETE.")
+    print()
+    print("── Overall ─────────────────────────────────────────────────")
+    print(f"  Avg F1:          {summary['avg_f1']:.3f}")
+    print(f"  Avg Precision:   {summary['avg_precision']:.3f}")
+    print(f"  Avg Recall:      {summary['avg_recall']:.3f}")
+    print(f"  Avg Latency:     {summary['avg_latency_ms']} ms")
+    print(f"  Graph hit rate:  {summary['graph_hit_rate']:.1%}")
+    print(f"  Self-heal rate:  {summary['self_heal_rate']:.1%}")
+    print(f"\nResults → {_OUT_FILE}")
+    return summary
 
 
 if __name__ == "__main__":

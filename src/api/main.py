@@ -17,14 +17,15 @@ Start with:
   uvicorn src.api.main:app --reload --port 8000
 """
 
-import sys
 import json
 import time
+import uuid
 import queue
 import pathlib
 import logging
 import threading
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import AsyncGenerator
 
@@ -39,10 +40,23 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from agent.graph import graph
+from agent.token_stream import set_token_queue
 from cache.redis_cache import cache_get, cache_set
 from benchmark.ifc_oracle import list_all_floors
+from config import settings
+from observability.logging import setup_logging, set_request_id
 
 logger = logging.getLogger("bim_graph.api")
+
+
+# ── App lifespan ───────────────────────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    setup_logging(settings.logs_dir)
+    logger.info("BIM-Graph API starting up")
+    yield
+    logger.info("BIM-Graph API shutting down")
+
 
 # ── App ────────────────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -51,6 +65,7 @@ app = FastAPI(
     version     = "1.0.0",
     docs_url    = "/docs",
     redoc_url   = "/redoc",
+    lifespan    = lifespan,
 )
 
 app.add_middleware(
@@ -67,15 +82,34 @@ class QueryRequest(BaseModel):
     ifc_filename: str
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+_MAX_QUERY_LEN = 2000
+_ALLOWED_IFC_SUFFIXES = {".ifc"}
+
+def _validate_request(query: str, filename: str) -> None:
+    """
+    Guard against two trivial but real attack surfaces:
+      1. Query length — prevents runaway LLM token spend.
+      2. Path traversal — filename comes from user input and is joined to a
+         filesystem path. pathlib.Path(f).name strips directory components,
+         so '../../etc/passwd' becomes 'passwd' which won't match an IFC file.
+    """
+    if len(query) > _MAX_QUERY_LEN:
+        raise HTTPException(400, f"Query too long (max {_MAX_QUERY_LEN} chars).")
+    safe = pathlib.Path(filename).name
+    if safe != filename or pathlib.Path(filename).suffix.lower() not in _ALLOWED_IFC_SUFFIXES:
+        raise HTTPException(400, "Invalid IFC filename.")
+
+
 def _sse(event_type: str, data: dict) -> str:
     """Format a single Server-Sent Event string."""
     return f"data: {json.dumps({'type': event_type, 'data': data})}\n\n"
 
 
-def _blank_state(query: str, ifc_filename: str) -> dict:
+def _blank_state(query: str, ifc_filename: str, request_id: str = "") -> dict:
     return {
         "query":               query,
         "spatial_constraints": "",
+        "is_inventory_query":  False,
         "retrieved_nodes":     [],
         "generation":          "",
         "evaluator_feedback":  {},
@@ -83,6 +117,11 @@ def _blank_state(query: str, ifc_filename: str) -> dict:
         "loop_count":          0,
         "retrieval_source":    "",
         "ifc_filename":        ifc_filename,
+        "node_timings":        {},
+        "context_token_count": 0,
+        "graph_result_count":  0,
+        "request_id":          request_id,
+        "extracted_guids":     [],
     }
 
 
@@ -115,17 +154,18 @@ def _node_to_event(node_name: str, node_output: dict) -> dict:
                 "data": {"spatial_match": fb.get("spatial_match"),
                          "reason": fb.get("reason", "")}}
 
+    if node_name == "graph_query":
+        source  = node_output.get("retrieval_source", "graph")
+        records = node_output.get("graph_result_count", 0)
+        return {"type": "node_end", **base,
+                "data": {"records": records, "source": source}}
+
     if node_name == "spatial_ast_retrieval":
-        log   = node_output.get("correction_log", [])
-        loops = node_output.get("loop_count", 1)
+        log    = node_output.get("correction_log", [])
+        loops  = node_output.get("loop_count", 1)
         reason = log[-1].get("failure_reason", "") if log else ""
-        
-        if "Early Routing" in reason:
-            return {"type": "node_end", **base, "data": {"reason": reason}}
-        else:
-            return {"type": "self_heal", **base,
-                    "data": {"loop": loops,
-                             "reason": reason}}
+        return {"type": "self_heal", **base,
+                "data": {"loop": loops, "reason": reason}}
 
     # Fallback for any future nodes
     return {"type": "node_end", **base, "data": {}}
@@ -165,10 +205,15 @@ async def query_pipeline(req: QueryRequest):
     Run the full BIM-Graph pipeline synchronously.
     Returns a single JSON response (use /query/stream for real-time updates).
     """
-    t0 = time.time()
+    _validate_request(req.query, req.ifc_filename)
+    rid = uuid.uuid4().hex[:8]
+    set_request_id(rid)
+    t0  = time.time()
+    logger.info("request_start query=%r ifc=%s", req.query, req.ifc_filename)
 
     cached = cache_get(req.query)
     if cached:
+        logger.info("cache_hit latency_ms=%d", int((time.time() - t0) * 1000))
         return {
             "answer":              cached["answer"],
             "spatial_constraints": "",
@@ -177,17 +222,18 @@ async def query_pipeline(req: QueryRequest):
             "self_healed":         False,
             "correction_log":      cached.get("correction_log", []),
             "latency_ms":          int((time.time() - t0) * 1000),
+            "request_id":          rid,
         }
 
-    state = graph.invoke(_blank_state(req.query, req.ifc_filename))
+    state = graph.invoke(_blank_state(req.query, req.ifc_filename, rid))
 
-    cache_set(
-        req.query,
-        state.get("spatial_constraints", ""),
-        state.get("generation", ""),
-        state.get("correction_log", []),
+    cache_set(req.query, state.get("generation", ""), state.get("correction_log", []))
+
+    latency_ms = int((time.time() - t0) * 1000)
+    logger.info(
+        "request_end source=%s self_healed=%s latency_ms=%d",
+        state.get("retrieval_source"), state.get("loop_count", 0) > 0, latency_ms,
     )
-
     return {
         "answer":              state.get("generation", ""),
         "spatial_constraints": state.get("spatial_constraints", ""),
@@ -195,7 +241,11 @@ async def query_pipeline(req: QueryRequest):
         "cache_hit":           False,
         "self_healed":         state.get("loop_count", 0) > 0,
         "correction_log":      state.get("correction_log", []),
-        "latency_ms":          int((time.time() - t0) * 1000),
+        "node_timings":        state.get("node_timings", {}),
+        "context_token_count": state.get("context_token_count", 0),
+        "graph_result_count":  state.get("graph_result_count", 0),
+        "latency_ms":          latency_ms,
+        "request_id":          rid,
     }
 
 
@@ -215,11 +265,16 @@ async def query_stream(
       final              → pipeline done, full result attached
       error              → unhandled exception
     """
+    _validate_request(q, f)
+    rid = uuid.uuid4().hex[:8]
+    set_request_id(rid)
+    logger.info("stream_start query=%r ifc=%s", q, f)
+
     async def event_generator() -> AsyncGenerator[str, None]:
         t0 = time.time()
 
         # ── Cache check ────────────────────────────────────────────────────
-        cached = cache_get(q)   
+        cached = cache_get(q)
         if cached:
             yield _sse("cache_hit", {
                 "answer":       cached["answer"],
@@ -235,31 +290,43 @@ async def query_stream(
 
         # ── Run LangGraph in a background thread, push events via queue ────
         event_queue: queue.Queue = queue.Queue()
+        token_queue: queue.Queue = queue.Queue()
         final_state: dict = {}
 
         def _run_graph():
+            set_request_id(rid)
+            set_token_queue(token_queue)   # lets generate node write tokens here
             try:
-                state = _blank_state(q, f)
+                state = _blank_state(q, f, rid)
                 for node_event in graph.stream(state, stream_mode="updates"):
                     event_queue.put(("node", node_event))
-                    # Track the last full output for the final event
                     node_name   = next(iter(node_event))
                     node_output = node_event[node_name]
                     final_state.update(node_output)
             except Exception as exc:
                 event_queue.put(("error", str(exc)))
             finally:
+                set_token_queue(None)
                 event_queue.put(("done", None))
 
         thread = threading.Thread(target=_run_graph, daemon=True)
         thread.start()
 
-        # ── Drain queue and yield SSE events ───────────────────────────────
+        # ── Drain queues and yield SSE events ──────────────────────────────
         while True:
+            # Flush any pending tokens first — they arrive faster than node events
+            while True:
+                try:
+                    token = token_queue.get_nowait()
+                    if token is not None:   # None is the sentinel that generation ended
+                        yield _sse("token", {"text": token})
+                except queue.Empty:
+                    break
+
             try:
                 kind, payload = event_queue.get(timeout=0.05)
             except queue.Empty:
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(0)
                 continue
 
             if kind == "error":
@@ -268,11 +335,13 @@ async def query_stream(
 
             if kind == "done":
                 # Write to cache
-                cache_set(
-                    q,
-                    final_state.get("spatial_constraints", ""),
-                    final_state.get("generation", ""),
-                    final_state.get("correction_log", []),
+                cache_set(q, final_state.get("generation", ""), final_state.get("correction_log", []))
+                latency_ms = int((time.time() - t0) * 1000)
+                logger.info(
+                    "stream_end source=%s self_healed=%s latency_ms=%d",
+                    final_state.get("retrieval_source"),
+                    final_state.get("loop_count", 0) > 0,
+                    latency_ms,
                 )
                 yield _sse("final", {
                     "answer":              final_state.get("generation", ""),
@@ -281,7 +350,11 @@ async def query_stream(
                     "self_healed":         final_state.get("loop_count", 0) > 0,
                     "cache_hit":           False,
                     "correction_log":      final_state.get("correction_log", []),
-                    "latency_ms":          int((time.time() - t0) * 1000),
+                    "node_timings":        final_state.get("node_timings", {}),
+                    "context_token_count": final_state.get("context_token_count", 0),
+                    "graph_result_count":  final_state.get("graph_result_count", 0),
+                    "latency_ms":          latency_ms,
+                    "request_id":          rid,
                 })
                 break
 
@@ -290,6 +363,11 @@ async def query_stream(
                 node_output = payload[node_name]
                 evt         = _node_to_event(node_name, node_output)
                 yield _sse(evt["type"], {"node": evt["node"], **evt["data"]})
+                if node_name == "generate":
+                    yield _sse("generation_complete", {
+                        "answer": node_output.get("generation", ""),
+                        "node":   "generate",
+                    })
 
             await asyncio.sleep(0)  # yield to FastAPI event loop
 

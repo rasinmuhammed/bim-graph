@@ -24,23 +24,23 @@ def test_should_self_heal_stops_after_ast():
     assert should_self_heal(state) == END
 
 
-def test_route_after_extraction_inventory_query():
-    """Inventory queries must skip dense retrieval and go straight to AST."""
+def test_route_after_extraction_with_floor_goes_to_graph():
+    """Any query with a known floor goes to graph_query first — graph is now primary."""
     from agent.graph import route_after_extraction
 
     state = {
         "is_inventory_query":  True,
         "spatial_constraints": "Level 2",
     }
-    assert route_after_extraction(state) == "spatial_ast_retrieval"
+    assert route_after_extraction(state) == "graph_query"
 
 
-def test_route_after_extraction_normal_query():
-    """Non-inventory queries must go through hybrid retrieval first."""
+def test_route_after_extraction_no_floor_goes_to_dense():
+    """Without a floor constraint graph queries make no sense — use dense retrieval."""
     from agent.graph import route_after_extraction
 
     state = {
         "is_inventory_query":  False,
-        "spatial_constraints": "Level 2",
+        "spatial_constraints": "",
     }
     assert route_after_extraction(state) == "retrieve_hybrid"

@@ -2,71 +2,297 @@
   {
     "id": "Q01",
     "query": "List all walls and partitions located on Level 1",
+    "ifc_filename": "Duplex_A_20110907.ifc",
     "target_floor": "Level 1",
-    "expected_ifc_type": "IfcWall",
-    "description": "Broad architectural query — Level 1"
+    "oracle_ifc_types": ["IfcWall", "IfcWallStandardCase"],
+    "category": "architectural",
+    "description": "Broad architectural query — baseline should partially succeed"
   },
   {
     "id": "Q02",
     "query": "What doors are installed on Level 2?",
+    "ifc_filename": "Duplex_A_20110907.ifc",
     "target_floor": "Level 2",
-    "expected_ifc_type": "IfcDoor",
-    "description": "Specific element type query — Level 2"
+    "oracle_ifc_types": ["IfcDoor"],
+    "category": "architectural",
+    "description": "Specific element type — Level 2"
   },
   {
     "id": "Q03",
-    "query": "List all structural and architectural elements found on Level 2",
+    "query": "What is present on Level 2? Give me the complete inventory.",
+    "ifc_filename": "Duplex_A_20110907.ifc",
     "target_floor": "Level 2",
-    "expected_ifc_type": null,
-    "description": "Broad floor query — Level 2"
+    "oracle_ifc_types": null,
+    "category": "inventory",
+    "description": "Exhaustive inventory — dense RAG mathematically cannot list all elements"
   },
   {
     "id": "Q04",
-    "query": "What building elements are located at the foundation level (T/FDN)?",
-    "target_floor": "T/FDN",
-    "expected_ifc_type": null,
-    "description": "Below-ground foundation query"
+    "query": "List every single element on Level 1. Do not omit anything.",
+    "ifc_filename": "Duplex_A_20110907.ifc",
+    "target_floor": "Level 1",
+    "oracle_ifc_types": null,
+    "category": "inventory",
+    "description": "Explicit exhaustive demand — hardest for semantic search"
   },
   {
     "id": "Q05",
-    "query": "List every wall on the roof level",
-    "target_floor": "Roof",
-    "expected_ifc_type": "IfcWall",
-    "description": "Roof-level query"
+    "query": "What HVAC equipment is on Level 2?",
+    "ifc_filename": "Duplex_A_20110907.ifc",
+    "target_floor": "Level 2",
+    "oracle_ifc_types": [
+      "IfcAirTerminal", "IfcAirTerminalBox", "IfcAirToAirHeatRecovery",
+      "IfcBoiler", "IfcChiller", "IfcCoil", "IfcCompressor", "IfcCondenser",
+      "IfcCooledBeam", "IfcCoolingTower", "IfcDuctFitting", "IfcDuctSegment",
+      "IfcDuctSilencer", "IfcEvaporativeCooler", "IfcEvaporator", "IfcFan",
+      "IfcFilter", "IfcFlowMeter", "IfcHeatExchanger", "IfcHumidifier",
+      "IfcPump", "IfcSpaceHeater", "IfcTank", "IfcValve", "IfcUnitaryEquipment"
+    ],
+    "category": "mep",
+    "description": "MEP query — tests IFC type synonym expansion"
   },
   {
     "id": "Q06",
-    "query": "Which floors contain interior partition walls and how many are on each floor?",
-    "target_floor": null,
-    "expected_ifc_type": "IfcWallStandardCase",
-    "description": "Multi-floor aggregation query — no single target floor"
+    "query": "List all mechanical and plumbing assets on Level 1",
+    "ifc_filename": "Duplex_A_20110907.ifc",
+    "target_floor": "Level 1",
+    "oracle_ifc_types": [
+      "IfcAirTerminal", "IfcAirTerminalBox", "IfcAirToAirHeatRecovery",
+      "IfcBoiler", "IfcChiller", "IfcCoil", "IfcCompressor", "IfcCondenser",
+      "IfcCooledBeam", "IfcCoolingTower", "IfcDuctFitting", "IfcDuctSegment",
+      "IfcDuctSilencer", "IfcEvaporativeCooler", "IfcEvaporator", "IfcFan",
+      "IfcFilter", "IfcFlowMeter", "IfcHeatExchanger", "IfcHumidifier",
+      "IfcPipeSegment", "IfcPipeFitting", "IfcPump", "IfcSanitaryTerminal",
+      "IfcSpaceHeater", "IfcTank", "IfcValve", "IfcWasteTerminal"
+    ],
+    "category": "mep",
+    "description": "MEP inventory — should trigger MEP filter in graph_query node"
   },
   {
     "id": "Q07",
-    "query": "Show me all columns and slabs on Level 1",
-    "target_floor": "Level 1",
-    "expected_ifc_type": "IfcColumn",
-    "description": "Structural element query — tests hallucination when element type is absent"
+    "query": "Are there any pumps or fans on Level 2?",
+    "ifc_filename": "Duplex_A_20110907.ifc",
+    "target_floor": "Level 2",
+    "oracle_ifc_types": ["IfcPump", "IfcFan"],
+    "category": "mep",
+    "description": "Targeted MEP query — tests IfcPump and IfcFan retrieval"
   },
   {
     "id": "Q08",
-    "query": "What windows are installed on Level 2?",
-    "target_floor": "Level 2",
-    "expected_ifc_type": "IfcWindow",
-    "description": "Opening element query — Level 2"
+    "query": "What electrical fixtures are installed on Level 1?",
+    "ifc_filename": "Duplex_A_20110907.ifc",
+    "target_floor": "Level 1",
+    "oracle_ifc_types": [
+      "IfcLightFixture", "IfcOutlet", "IfcElectricAppliance",
+      "IfcElectricDistributionPoint", "IfcElectricGenerator",
+      "IfcElectricMotor", "IfcElectricTimeControl"
+    ],
+    "category": "mep",
+    "description": "Electrical equipment query — tests IfcLightFixture and IfcOutlet"
   },
   {
     "id": "Q09",
-    "query": "List all doors and openings on the foundation level",
-    "target_floor": "T/FDN",
-    "expected_ifc_type": "IfcDoor",
-    "description": "Foundation-level door query"
+    "query": "Which floors contain doors and how many are on each floor?",
+    "ifc_filename": "Duplex_A_20110907.ifc",
+    "target_floor": null,
+    "oracle_ifc_types": null,
+    "category": "cross_floor",
+    "description": "Cross-floor aggregation — no spatial constraint, should use dense retrieval"
   },
   {
     "id": "Q10",
-    "query": "What building elements exist on the roof? Give me the complete list.",
+    "query": "How many walls does the building have in total across all floors?",
+    "ifc_filename": "Duplex_A_20110907.ifc",
+    "target_floor": null,
+    "oracle_ifc_types": null,
+    "category": "cross_floor",
+    "description": "Building-wide aggregation — spatial constraint absent"
+  },
+  {
+    "id": "Q11",
+    "query": "Which floor has the most elements?",
+    "ifc_filename": "Duplex_A_20110907.ifc",
+    "target_floor": null,
+    "oracle_ifc_types": null,
+    "category": "cross_floor",
+    "description": "Comparative cross-floor — requires counting per storey"
+  },
+  {
+    "id": "Q12",
+    "query": "Show me all elements on the foundation level",
+    "ifc_filename": "Duplex_A_20110907.ifc",
+    "target_floor": "T/FDN",
+    "oracle_ifc_types": null,
+    "category": "inventory",
+    "description": "Non-standard floor name — tests storey name matching robustness"
+  },
+  {
+    "id": "Q13",
+    "query": "What is on the roof?",
+    "ifc_filename": "Duplex_A_20110907.ifc",
     "target_floor": "Roof",
-    "expected_ifc_type": null,
-    "description": "Exhaustive roof query"
+    "oracle_ifc_types": null,
+    "category": "inventory",
+    "description": "Ambiguous floor name — 'roof' vs 'Roof' case sensitivity test"
+  },
+  {
+    "id": "Q14",
+    "query": "List all elements on the upper level",
+    "ifc_filename": "Duplex_A_20110907.ifc",
+    "target_floor": "Level 2",
+    "oracle_ifc_types": null,
+    "category": "adversarial",
+    "description": "Adversarial: informal floor name — LLM must map 'upper level' to 'Level 2'"
+  },
+  {
+    "id": "Q15",
+    "query": "What is on the ground floor?",
+    "ifc_filename": "Duplex_A_20110907.ifc",
+    "target_floor": "Level 1",
+    "oracle_ifc_types": null,
+    "category": "adversarial",
+    "description": "Adversarial: 'ground floor' maps to Level 1 in most buildings"
+  },
+  {
+    "id": "Q16",
+    "query": "List all IfcBoiler elements on Level 1",
+    "ifc_filename": "Duplex_A_20110907.ifc",
+    "target_floor": "Level 1",
+    "oracle_ifc_types": ["IfcBoiler"],
+    "category": "adversarial",
+    "description": "Adversarial: element type absent — system must return empty, not hallucinate"
+  },
+  {
+    "id": "Q17",
+    "query": "What nuclear reactors are installed on Level 2?",
+    "ifc_filename": "Duplex_A_20110907.ifc",
+    "target_floor": "Level 2",
+    "oracle_ifc_types": ["IfcNuclearReactor"],
+    "category": "adversarial",
+    "description": "Adversarial: impossible element — hallucination trap, correct answer is 'none found'"
+  },
+  {
+    "id": "Q18",
+    "query": "Show me everything that is NOT on Level 1",
+    "ifc_filename": "Duplex_A_20110907.ifc",
+    "target_floor": null,
+    "oracle_ifc_types": null,
+    "category": "adversarial",
+    "description": "Adversarial: negation query — current pipeline cannot handle negation correctly"
+  },
+  {
+    "id": "Q19",
+    "query": "What elements are on floors 1 and 2 combined?",
+    "ifc_filename": "Duplex_A_20110907.ifc",
+    "target_floor": null,
+    "oracle_ifc_types": null,
+    "category": "adversarial",
+    "description": "Adversarial: multi-floor single query — pipeline extracts only one floor constraint"
+  },
+  {
+    "id": "Q20",
+    "query": "List all walls on the ground floor",
+    "ifc_filename": "AC20-FZK-Haus.ifc",
+    "target_floor": "Erdgeschoss",
+    "oracle_ifc_types": ["IfcWall", "IfcWallStandardCase"],
+    "category": "architectural",
+    "description": "Wall query on German IFC file — tests multi-file isolation and non-English storey names"
+  },
+  {
+    "id": "Q21",
+    "query": "What is on the upper floor of the FZK house?",
+    "ifc_filename": "AC20-FZK-Haus.ifc",
+    "target_floor": "Dachgeschoss",
+    "oracle_ifc_types": null,
+    "category": "inventory",
+    "description": "Inventory on German IFC — tests LLM mapping of 'upper floor' to Dachgeschoss"
+  },
+  {
+    "id": "Q22",
+    "query": "List every element on the ground floor of the institute building",
+    "ifc_filename": "AC20-Institute-Var-2.ifc",
+    "target_floor": "Erdgeschoss",
+    "oracle_ifc_types": null,
+    "category": "inventory",
+    "description": "Inventory on large German IFC — 205 elements, highest latency expected"
+  },
+  {
+    "id": "Q23",
+    "query": "What windows exist on Level 2?",
+    "ifc_filename": "Duplex_A_20110907.ifc",
+    "target_floor": "Level 2",
+    "oracle_ifc_types": ["IfcWindow"],
+    "category": "architectural",
+    "description": "IfcWindow query — tests architectural element retrieval"
+  },
+  {
+    "id": "Q24",
+    "query": "Find all sensors and actuators in the building",
+    "ifc_filename": "Duplex_A_20110907.ifc",
+    "target_floor": null,
+    "oracle_ifc_types": null,
+    "category": "mep",
+    "description": "Building-wide BMS query — no floor constraint, tests cross-floor MEP retrieval"
+  },
+  {
+    "id": "Q25",
+    "query": "What slabs are on Level 2?",
+    "ifc_filename": "Duplex_A_20110907.ifc",
+    "target_floor": "Level 2",
+    "oracle_ifc_types": ["IfcSlab"],
+    "category": "architectural",
+    "description": "IfcSlab query — structural element, should be present on Level 2"
+  },
+  {
+    "id": "Q26",
+    "query": "What HVAC equipment is on the ground floor?",
+    "ifc_filename": "PCERT-Building-Hvac.ifc",
+    "target_floor": "00 groundfloor",
+    "oracle_ifc_types": [
+      "IfcAirTerminal", "IfcAirTerminalBox", "IfcAirToAirHeatRecovery",
+      "IfcBoiler", "IfcChiller", "IfcCoil", "IfcCompressor", "IfcCondenser",
+      "IfcCooledBeam", "IfcCoolingTower", "IfcDuctFitting", "IfcDuctSegment",
+      "IfcDuctSilencer", "IfcEvaporativeCooler", "IfcEvaporator", "IfcFan",
+      "IfcFilter", "IfcFlowMeter", "IfcHeatExchanger", "IfcHumidifier",
+      "IfcPump", "IfcSpaceHeater", "IfcTank", "IfcValve", "IfcUnitaryEquipment"
+    ],
+    "category": "mep",
+    "description": "MEP query on PCERT-HVAC file — IFC4, real IfcAirTerminal + IfcDuctSegment present, F1 should be >0"
+  },
+  {
+    "id": "Q27",
+    "query": "List all air terminals on the ground floor",
+    "ifc_filename": "PCERT-Building-Hvac.ifc",
+    "target_floor": "00 groundfloor",
+    "oracle_ifc_types": ["IfcAirTerminal"],
+    "category": "mep",
+    "description": "Targeted MEP query — 2 IfcAirTerminal elements confirmed in oracle. Tests precision on exact type match."
+  },
+  {
+    "id": "Q28",
+    "query": "What walls are on the ground floor of the office building?",
+    "ifc_filename": "PCERT-Building-Architecture.ifc",
+    "target_floor": "00 groundfloor",
+    "oracle_ifc_types": ["IfcWall", "IfcWallStandardCase"],
+    "category": "architectural",
+    "description": "Wall query on IFC4 PCERT architectural model — validates IFC4 schema support"
+  },
+  {
+    "id": "Q29",
+    "query": "List all structural elements on the ground floor",
+    "ifc_filename": "PCERT-Building-Structural.ifc",
+    "target_floor": "00 groundfloor",
+    "oracle_ifc_types": ["IfcWall", "IfcWallStandardCase", "IfcBeam", "IfcColumn", "IfcSlab", "IfcFooting"],
+    "category": "architectural",
+    "description": "Structural query on PCERT structural model — tests IfcFooting and mixed structural type retrieval"
+  },
+  {
+    "id": "Q30",
+    "query": "Are there any ducts or ductwork on the ground floor?",
+    "ifc_filename": "PCERT-Building-Hvac.ifc",
+    "target_floor": "00 groundfloor",
+    "oracle_ifc_types": ["IfcDuctSegment", "IfcDuctFitting", "IfcDuctSilencer"],
+    "category": "mep",
+    "description": "Duct query on PCERT-HVAC — 1 IfcDuctSegment confirmed. Tests synonym expansion for 'ductwork'."
   }
 ]

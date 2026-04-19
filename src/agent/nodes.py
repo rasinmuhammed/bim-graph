@@ -1,25 +1,48 @@
 import ifcopenshell
-import os
 import re
 import time
 import logging
 import pathlib
 import chromadb
-import ifcopenshell
 import pickle
-from datetime import datetime
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from langchain_ollama import OllamaEmbeddings
-from langchain_groq import ChatGroq
+from langchain_openai import ChatOpenAI
+from tenacity import (
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+    before_sleep_log,
+)
 from agent.state import BIMGraphState
 from config import settings
+from graph_db import queries as gq
+from observability.logging import set_request_id
+from agent.token_stream import get_token_queue
 
 load_dotenv()
 
+
+def _is_rate_limit(exc: BaseException) -> bool:
+    """Return True for Groq 429 rate-limit errors so tenacity retries them."""
+    msg = str(exc).lower()
+    return "rate_limit_exceeded" in msg or "429" in msg or "rate limit" in msg
+
+
+# Retry up to 6 times with exponential backoff (1s → 2s → 4s … 32s).
+# Groq's Llama 4 Scout TPM limit on on-demand tier hits fast during benchmark runs.
+_llm_retry = retry(
+    retry=retry_if_exception(_is_rate_limit),
+    wait=wait_exponential(multiplier=1, min=1, max=32),
+    stop=stop_after_attempt(6),
+    before_sleep=before_sleep_log(logging.getLogger("bim_graph.nodes"), logging.WARNING),
+    reraise=True,
+)
+
 # ── Paths (absolute, works regardless of CWD) ─────────────────────────────────
 _CHROMA_PATH  = settings.chroma_path
-_LOGS_PATH    = settings.logs_dir
 _BM25_PATH    = pathlib.Path(settings.bm25_path)   # must be Path, not str
 
 # Fast model for constraint extraction (no thinking tokens, near-instant)
@@ -89,12 +112,20 @@ def _get_chroma_collection():
     return client.get_or_create_collection(name="bim_baseline")
 
 @lru_cache(maxsize=1)
-def _get_llm_fast() -> ChatGroq:
-    return ChatGroq(model=_LLM_MODEL, api_key=os.getenv("GROQ_API_KEY"))
+def _get_llm_fast() -> ChatOpenAI:
+    return ChatOpenAI(
+        model=_LLM_MODEL,
+        api_key=settings.cerebras_api_key,
+        base_url=settings.cerebras_base_url,
+    )
 
 @lru_cache(maxsize=1)
-def _get_llm_big() -> ChatGroq:
-    return ChatGroq(model=_LLM_MODEL_BIG, api_key=os.getenv("GROQ_API_KEY"))
+def _get_llm_big() -> ChatOpenAI:
+    return ChatOpenAI(
+        model=_LLM_MODEL_BIG,
+        api_key=settings.cerebras_api_key,
+        base_url=settings.cerebras_base_url,
+    )
 
 @lru_cache(maxsize=1)
 def _get_bm25_payload() -> dict | None:
@@ -117,22 +148,7 @@ def _get_ifc(filename: str) -> ifcopenshell.file:
         _ifc_cache[filename] = ifcopenshell.open(str(path))
     return _ifc_cache[filename]
 
-# ── Audit Logger Setup ─────────────────────────────────────────────────────────
-os.makedirs(_LOGS_PATH, exist_ok=True)
-_log_file = str(
-    pathlib.Path(_LOGS_PATH)
-    / f"bim_graph_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[
-        logging.FileHandler(_log_file),
-        logging.StreamHandler(),
-    ],
-)
-logger = logging.getLogger("bim_graph.audit")
-logger.info("Audit log initialised → %s", _log_file)
+logger = logging.getLogger("bim_graph.nodes")
 
 
 # ── Structured Output Schemas ──────────────────────────────────────────────────
@@ -152,6 +168,13 @@ class ConstraintOutput(BaseModel):
         )
     )
 
+    @field_validator("is_inventory_query", mode="before")
+    @classmethod
+    def _coerce_bool(cls, v):
+        if isinstance(v, str):
+            return v.lower() in ("true", "1", "yes")
+        return v
+
 
 class EvaluatorOutput(BaseModel):
     spatial_match: bool = Field(
@@ -161,9 +184,17 @@ class EvaluatorOutput(BaseModel):
             "        or names assets without confirming their floor."
         )
     )
+
     reason: str = Field(
         description="One concise sentence explaining the verdict."
     )
+
+    @field_validator("spatial_match", mode="before")
+    @classmethod
+    def _coerce_bool(cls, v):
+        if isinstance(v, str):
+            return v.lower() in ("true", "1", "yes")
+        return v
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -189,24 +220,38 @@ def extract_spatial_constraints(state: BIMGraphState) -> dict:
     Extract the floor / level / zone from a natural-language query.
     Uses structured output so JSON parsing errors are impossible.
     """
+    _t0 = time.perf_counter()
+    set_request_id(state.get("request_id", "-"))
     logger.info(
         "▶ [Node 0] extract_spatial_constraints  |  query: %r", state["query"]
     )
 
     prompt = (
-        f'Analyze this BIM query:\n'
+        f'Analyze this BIM query and respond ONLY with a JSON object — no markdown, no explanation.\n\n'
         f'Query: "{state["query"]}"\n\n'
-        f'1. Extract the exact floor, level, or zone reference (e.g. "Level 2"). Return empty string if none.\n'
-        f'2. Determine if this is an inventory query (e.g. "What is present?", "List all...") requiring an exhaustive list.'
+        f'Required JSON format:\n'
+        f'{{"spatial_constraints": "<floor name or empty string>", "is_inventory_query": true or false}}\n\n'
+        f'Rules:\n'
+        f'- spatial_constraints: the exact floor/level/zone (e.g. "Level 2", "Ground Floor"). '
+        f'Empty string if no floor is mentioned.\n'
+        f'- is_inventory_query: true if asking for exhaustive list/inventory ("what is present", '
+        f'"list all", "every element"). false for targeted questions.'
     )
 
-    llm    = _get_llm_fast()
-    result = llm.with_structured_output(ConstraintOutput).invoke(prompt)
+    llm = _get_llm_fast()
+    # Use json_mode to avoid Groq server-side tool-call schema validation, which
+    # rejects boolean-as-string outputs from some Llama models before we can coerce them.
+    result = _llm_retry(
+        llm.with_structured_output(ConstraintOutput, method="json_mode").invoke
+    )(prompt)
 
-    logger.info("  ✓ Extracted spatial constraint: %r (Inventory: %s)", result.spatial_constraints, result.is_inventory_query)
+    elapsed = time.perf_counter() - _t0
+    logger.info("  ✓ Extracted spatial constraint: %r (Inventory: %s) [%.2fs]",
+                result.spatial_constraints, result.is_inventory_query, elapsed)
     return {
         "spatial_constraints": result.spatial_constraints,
-        "is_inventory_query": result.is_inventory_query
+        "is_inventory_query":  result.is_inventory_query,
+        "node_timings": {**state.get("node_timings", {}), "extract_spatial_constraints": elapsed},
     }
 
 
@@ -221,38 +266,74 @@ def retrieve_hybrid(state: BIMGraphState) -> dict:
     Top-5 fused documents are returned as context for Node 2.
     Falls back to dense-only if the BM25 index is missing.
     """
+    def _expand_query(query: str) -> str:
+        """Append IFC entity type names when query is about MEP/equipment."""
+        if not _is_equipment_query(query):
+            return query
+        
+        #MAP human terms to IFC tpye names the index actually contains
+        expansions = {
+            "hvac":       ["IfcAirTerminal", "IfcUnitaryEquipment", "IfcFan"],
+            "pump":       ["IfcPump"],
+            "duct":       ["IfcDuctSegment", "IfcDuctFitting"],
+            "pipe":       ["IfcPipeSegment", "IfcPipeFitting"],
+            "valve":      ["IfcValve"],
+            "sensor":     ["IfcSensor"],
+            "electrical": ["IfcElectricAppliance", "IfcOutlet", "IfcLightFixture"],
+        }
+        q_lower = query.lower()
+        extra_terms: list[str] = []
+        for keyword, ifc_types in expansions.items():
+            if keyword in q_lower:
+                extra_terms.extend(ifc_types)
+        
+        if extra_terms:
+            return f"{query} {' '.join(extra_terms)}"
+        return query
+
+            
+    _t0   = time.perf_counter()
     query = state["query"]
+    set_request_id(state.get("request_id", "-"))
     logger.info("▶ [Node 1] retrieve_hybrid  |  query: %r", query[:80])
 
     # ── Dense retrieval (ChromaDB) ─────────────────────────────────────────
     logger.info("  Embedding query via Ollama nomic-embed-text …")
-    query_vector = _get_embedder().embed_query(query)
-    
+    expanded = _expand_query(query)
+    query_vector = _get_embedder().embed_query(expanded)
+    logger.info("  Query expanded: %r → %r", query[:60], expanded[:80])
+
     ifc_filename = state.get("ifc_filename")
+    floor        = state.get("spatial_constraints", "")
 
-    # Build metadata filer - narrow retrieval to the right floor when possible
-    where_filter: dict = {"file_name": ifc_filename} if ifc_filename else {}
+    # Build the tightest valid ChromaDB $where filter we can construct.
+    # Each grouped chunk now has entity_type metadata, enabling type-level filtering.
+    and_clauses: list[dict] = []
+    if ifc_filename:
+        and_clauses.append({"file_name": {"$eq": ifc_filename}})
+    if floor:
+        and_clauses.append({"floor": {"$eq": floor}})
 
-    floor = state.get("spatial_constraints", "")
-    if floor and ifc_filename:
-        where_filter = {
-            "$and": [
-                {"file_name": {"$eq": ifc_filename}},
-                {"floor": {"$eq": floor}}
-            ]
-        }
-    elif ifc_filename:
-        where_filter = {"file_name": {"$eq": ifc_filename}}
-   
+    if len(and_clauses) == 0:
+        where_filter = None
+    elif len(and_clauses) == 1:
+        where_filter = and_clauses[0]
+    else:
+        where_filter = {"$and": and_clauses}
+
+    # With grouped chunks, each result represents up to `chroma_group_size` elements.
+    # Fetch more candidates (15) so RRF has richer signal to rank.
+    _DENSE_TOP_K = 15
     dense_results = _get_chroma_collection().query(
         query_embeddings=[query_vector],
-        n_results=10,
-        where=where_filter if where_filter else None,
+        n_results=_DENSE_TOP_K,
+        where=where_filter,
         include=["documents"],
     )
     dense_docs = dense_results["documents"][0] if dense_results["documents"] else []
 
     # ── BM25 retrieval ─────────────────────────────────────────────────────
+    bm25_docs: list[str] = []
     bm25_payload = _get_bm25_payload()
     if bm25_payload is not None:
         bm25   = bm25_payload["bm25"]
@@ -261,21 +342,23 @@ def retrieve_hybrid(state: BIMGraphState) -> dict:
 
         tokenised_query = query.lower().split()
         scores          = bm25.get_scores(tokenised_query)
-        
-        # Filter scores by ifc_filename
-        filtered_indices = []
-        for i in range(len(scores)):
-             if not ifc_filename or (metas and i < len(metas) and metas[i].get("file_name") == ifc_filename) or not metas:
-                  filtered_indices.append(i)
-                  
-        top_indices     = sorted(filtered_indices, key=lambda i: scores[i], reverse=True)[:10]
-        bm25_docs       = [corpus[i] for i in top_indices]
-        logger.info("  BM25 top-10 retrieved (%d docs in index).", len(corpus))
+
+        # Filter by file_name and optionally floor to match ChromaDB behaviour
+        filtered_indices = [
+            i for i in range(len(scores))
+            if (not ifc_filename or not metas
+                or (i < len(metas) and metas[i].get("file_name") == ifc_filename))
+            and (not floor or not metas
+                 or (i < len(metas) and metas[i].get("floor") == floor))
+        ]
+        top_indices = sorted(filtered_indices, key=lambda i: scores[i], reverse=True)[:_DENSE_TOP_K]
+        bm25_docs   = [corpus[i] for i in top_indices]
+        logger.info("  BM25 top-%d retrieved (%d docs in index).", _DENSE_TOP_K, len(corpus))
     else:
         logger.warning("  BM25 index not found at %s — using dense-only.", _BM25_PATH)
 
     # ── Reciprocal Rank Fusion ─────────────────────────────────────────────
-    K        = 60
+    K        = settings.rrf_k
     rrf_map: dict[str, float] = {}
 
     for rank, doc in enumerate(dense_docs):
@@ -283,13 +366,18 @@ def retrieve_hybrid(state: BIMGraphState) -> dict:
     for rank, doc in enumerate(bm25_docs):
         rrf_map[doc] = rrf_map.get(doc, 0.0) + 1.0 / (rank + K)
 
-    fused    = sorted(rrf_map.items(), key=lambda x: x[1], reverse=True)[:5]
+    fused    = sorted(rrf_map.items(), key=lambda x: x[1], reverse=True)[:settings.retrieval_top_k]
     top_docs = [doc for doc, _ in fused]
 
-    mode = "hybrid: bm25+vector" if bm25_docs else "dense-only"
-    logger.info("  ✓ Retrieved %d chunks [%s].", len(top_docs), mode)
+    mode    = "hybrid: bm25+vector" if bm25_docs else "dense-only"
+    elapsed = time.perf_counter() - _t0
+    logger.info("  ✓ Retrieved %d chunks [%s] [%.2fs].", len(top_docs), mode, elapsed)
 
-    return {"retrieved_nodes": top_docs, "retrieval_source": "dense"}
+    return {
+        "retrieved_nodes":  top_docs,
+        "retrieval_source": "dense",
+        "node_timings": {**state.get("node_timings", {}), "retrieve_hybrid": elapsed},
+    }
 
 
 
@@ -301,7 +389,9 @@ def generate(state: BIMGraphState) -> dict:
       - "dense": intentionally passive — proves the baseline cannot answer spatially.
       - "ast":   directive — LLM is given the IFC type guide and told to commit to answers.
     """
+    _t0    = time.perf_counter()
     source = state.get("retrieval_source", "dense")
+    set_request_id(state.get("request_id", "-"))
     logger.info(
         "▶ [Node 2] generate  |  context chunks: %d  |  source: %s",
         len(state["retrieved_nodes"]),
@@ -318,30 +408,37 @@ def generate(state: BIMGraphState) -> dict:
         char_count += len(doc)
     context = "\n".join(context_parts)
 
-    if source == "ast":
-        prompt = f"""You are a BIM analyst reviewing deterministic IFC data.
+    if source in ("ast", "graph"):
+        # Both AST and graph results are spatially verified ground truth.
+        # AST = deterministic IFC traversal. Graph = Cypher query against Neo4j hierarchy.
+        # Neither needs hedging language — the data is correct by construction.
+        source_label = (
+            "DETERMINISTIC IFC AST TRAVERSAL" if source == "ast"
+            else "NEO4J GRAPH DATABASE (Cypher query against IFC hierarchy)"
+        )
+        prompt = f"""You are a BIM analyst reviewing verified BIM data.
 
-The context below was extracted via direct IFC AST traversal and is ABSOLUTE SPATIAL TRUTH.
-Every element listed is confirmed on the floor stated in the header. Do not express any doubt about floor placement.
+The context below was extracted via {source_label} and is SPATIALLY CONFIRMED.
+Every element listed is confirmed on the floor stated in the header. Do not express doubt about floor placement.
 
 {_IFC_TYPE_GUIDE}
 
-Context (spatially verified IFC AST data):
+Context (spatially verified data):
 {context}
 
 Query: {state["query"]}
 
 Instructions:
-1. If the query asks for specific equipment, use the IFC type guide to identify matches. 
-   If the query asks 'What is present?', 'List all', or implies a general floor inventory, YOU MUST LIST EVERY SINGLE ENTITY in the context, regardless of the guide.
+1. If the query asks for specific equipment, use the IFC type guide to identify matches.
+   If the query asks 'What is present?', 'List all', or implies a general inventory, list EVERY entity in the context.
 2. For each matching asset, output a line: [Entity Type] | [Name] | [GUID]
 3. Do NOT say "I cannot determine" or "insufficient data" — the spatial data is already verified.
-4. If the context truly contains zero entities matching the user's specific request, respond with exactly:
+4. If the context truly contains zero matching entities, respond with:
    "No matching assets of the requested type were found on this floor in the IFC model."
 
 Answer:"""
     else:
-        # Baseline / dense pass — keep this intentionally blind to prove spatial failure
+        # Dense / hybrid pass — intentionally neutral to prove spatial blindness in the baseline
         prompt = f"""You are a BIM analyst.
 Use ONLY the following context to answer the query. Do not invent data not present in the context.
 The context was retrieved via semantic search and may NOT preserve spatial floor hierarchy.
@@ -353,13 +450,45 @@ Query: {state["query"]}
 
 Answer:"""
 
-    llm      = _get_llm_big()
-    response = llm.invoke(prompt)
-    # Strip <think>…</think> blocks emitted by qwen3 before the actual answer
-    answer   = re.sub(r"<think>.*?</think>", "", response.content, flags=re.DOTALL).strip()
+    llm     = _get_llm_big()
+    token_q = get_token_queue()   # None when called outside HTTP (benchmark, tests)
 
-    logger.info("  ✓ Generation complete (%d chars).", len(answer))
-    return {"generation": answer}
+    def _stream_generate() -> list[str]:
+        buf: list[str] = []
+        for chunk in llm.stream(prompt):
+            text = chunk.content
+            if text:
+                buf.append(text)
+                if token_q is not None:
+                    token_q.put(text)
+        return buf
+
+    chunks = _llm_retry(_stream_generate)()
+
+    # Signal the SSE drain loop that generation is done
+    if token_q is not None:
+        token_q.put(None)
+
+    raw_answer = "".join(chunks)
+    answer     = re.sub(r"<think>.*?</think>", "", raw_answer, flags=re.DOTALL).strip()
+
+    # Extract IFC GUIDs (22-char base64-like strings) from the generated answer.
+    # Stored explicitly in state so the benchmark oracle and evaluator can use
+    # the exact set without re-running regex on free text downstream.
+    extracted_guids = re.findall(r"[A-Za-z0-9$_]{22}", answer)
+
+    elapsed     = time.perf_counter() - _t0
+    token_count = len(context.split())
+    logger.info(
+        "  ✓ Generation complete (%d chars, %d context-tokens, %d GUIDs extracted) [%.2fs].",
+        len(answer), token_count, len(extracted_guids), elapsed,
+    )
+    return {
+        "generation":          answer,
+        "extracted_guids":     extracted_guids,
+        "context_token_count": token_count,
+        "node_timings": {**state.get("node_timings", {}), "generate": elapsed},
+    }
 
 
 # ── Node 3 ─────────────────────────────────────────────────────────────────────
@@ -371,7 +500,9 @@ def evaluate(state: BIMGraphState) -> dict:
       - "ast":   lenient on floor proof (already guaranteed) — fails only if the
                  answer is concretely empty or says "cannot determine".
     """
+    _t0    = time.perf_counter()
     source = state.get("retrieval_source", "dense")
+    set_request_id(state.get("request_id", "-"))
     logger.info(
         "▶ [Node 3] evaluate  |  constraints: %r  |  source: %s",
         state["spatial_constraints"],
@@ -408,10 +539,12 @@ User requested assets specifically on: {state["spatial_constraints"]}
 
 {source_context}
 
-Evaluate the answer and return your verdict."""
+Evaluate the answer and return your verdict as a JSON object with keys "spatial_match" (boolean) and "reason" (string). No markdown."""
 
     llm      = _get_llm_big()
-    result   = llm.with_structured_output(EvaluatorOutput).invoke(prompt)
+    result   = _llm_retry(
+        llm.with_structured_output(EvaluatorOutput, method="json_mode").invoke
+    )(prompt)
     feedback = result.model_dump()
 
     match = feedback["spatial_match"]
@@ -427,7 +560,12 @@ Evaluate the answer and return your verdict."""
             logger.warning("  ⚠  Spatial mismatch on dense retrieval: %s", feedback["reason"])
             logger.warning("  ↳  Self-healing will trigger (spatial_ast_retrieval).")
 
-    return {"evaluator_feedback": feedback}
+    elapsed = time.perf_counter() - _t0
+    logger.info("  ✓ Evaluation complete [%.2fs].", elapsed)
+    return {
+        "evaluator_feedback": feedback,
+        "node_timings": {**state.get("node_timings", {}), "evaluate": elapsed},
+    }
 
 
 # ── Node 4 ─────────────────────────────────────────────────────────────────────
@@ -443,10 +581,11 @@ def spatial_ast_retrieval(state: BIMGraphState) -> dict:
     5. Prepends a deterministic spatial-proof header so the generate node knows
        the data is ground truth.
     """
+    _t0      = time.perf_counter()
     target   = state["spatial_constraints"]
     query    = state["query"]
     is_equip = _is_equipment_query(query)
-
+    set_request_id(state.get("request_id", "-"))
     logger.info(
         "▶ [Node 4] spatial_ast_retrieval  |  target storey: %r  |  equipment_filter: %s",
         target,
@@ -518,13 +657,27 @@ def spatial_ast_retrieval(state: BIMGraphState) -> dict:
             selected     = all_elements
             filter_label = "ALL elements"
 
-        # Cap elements to stay within Groq's token budget
-        if len(selected) > _MAX_AST_ELEMENTS:
+        total_selected = len(selected)
+
+        # Priority-ordered truncation: sort by IFC type so related elements stay
+        # together and the LLM sees a representative sample rather than a random cut.
+        # For equipment queries, MEP types are already isolated so no resorting needed.
+        if not is_equip:
+            selected = sorted(selected, key=lambda s: s.split("|")[0])  # sort by Entity type prefix
+
+        if total_selected > _MAX_AST_ELEMENTS:
+            shown   = _MAX_AST_ELEMENTS
+            omitted = total_selected - shown
             logger.info(
-                "  Capping context from %d → %d elements (TPM budget).",
-                len(selected), _MAX_AST_ELEMENTS,
+                "  Floor has %d elements — showing %d, omitting %d (token budget).",
+                total_selected, shown, omitted,
             )
-            selected = selected[:_MAX_AST_ELEMENTS]
+            selected = selected[:shown]
+            context_lines.append(
+                f"[NOTE: Floor has {total_selected} elements. "
+                f"Showing {shown} — {omitted} omitted. "
+                f"Narrow your query to a specific type for complete results.]"
+            )
 
         context_lines.extend(selected)
 
@@ -556,9 +709,94 @@ def spatial_ast_retrieval(state: BIMGraphState) -> dict:
         new_loop_count,
     )
 
+    elapsed      = time.perf_counter() - _t0
+    token_count  = sum(len(line.split()) for line in context_lines)
+    logger.info("  ✓ AST retrieval complete (%d tokens) [%.2fs].", token_count, elapsed)
     return {
-        "retrieved_nodes": context_lines,
-        "retrieval_source": "ast",
-        "correction_log":  state["correction_log"] + [correction_entry],
-        "loop_count":      new_loop_count,
+        "retrieved_nodes":     context_lines,
+        "retrieval_source":    "ast",
+        "correction_log":      state["correction_log"] + [correction_entry],
+        "loop_count":          new_loop_count,
+        "context_token_count": token_count,
+        "node_timings": {**state.get("node_timings", {}), "spatial_ast_retrieval": elapsed},
+    }
+
+
+# ── Node 5 ─────────────────────────────────────────────────────────────────────
+def graph_query(state: BIMGraphState) -> dict:
+    """
+    Neo4j graph retrieval node — the primary spatial retrieval path.
+
+    WHY THIS IS BETTER THAN DENSE RETRIEVAL:
+    Dense retrieval embeds the query and finds semantically similar text chunks.
+    It cannot guarantee completeness or spatial accuracy.
+
+    Graph retrieval executes a Cypher query against a structured graph of the
+    IFC hierarchy. It returns every element on the requested floor by definition —
+    no approximation, no hallucination risk, no evaluator loop needed.
+
+    ROUTING LOGIC (set in graph.py):
+    - If spatial constraints + Neo4j available  → this node (graph_query)
+    - Otherwise                                  → retrieve_hybrid
+
+    FALLBACK:
+    If Neo4j is down or the file isn't loaded yet, this node returns
+    retrieval_source="graph_unavailable" so the evaluator can route to AST.
+    """
+    _t0   = time.perf_counter()
+    floor = state.get("spatial_constraints", "")
+    ifc_f = state.get("ifc_filename", "")
+    set_request_id(state.get("request_id", "-"))
+    logger.info("▶ [Node 5] graph_query  |  floor: %r  |  file: %r", floor, ifc_f)
+
+    # ── Guard: Neo4j must be available and the file must be loaded ─────────────
+    if not gq.is_graph_available():
+        logger.warning("  Neo4j unavailable — falling back to dense retrieval route.")
+        return {
+            "retrieved_nodes":    [],
+            "retrieval_source":   "graph_unavailable",
+            "graph_result_count": 0,
+            "node_timings": {**state.get("node_timings", {}), "graph_query": time.perf_counter() - _t0},
+        }
+
+    if not gq.is_file_loaded(ifc_f):
+        logger.warning("  IFC file %r not in Neo4j — run loader first. Falling back.", ifc_f)
+        return {
+            "retrieved_nodes":    [],
+            "retrieval_source":   "graph_unavailable",
+            "graph_result_count": 0,
+            "node_timings": {**state.get("node_timings", {}), "graph_query": time.perf_counter() - _t0},
+        }
+
+    # ── Select Cypher query based on query intent ──────────────────────────────
+    # is_inventory_query = True  → user wants EVERYTHING on the floor
+    # is_equipment_query = True  → user wants only MEP/mechanical assets
+    # otherwise                  → return all elements (let generate filter)
+    is_equip = _is_equipment_query(state.get("query", ""))
+    is_inv   = state.get("is_inventory_query", False)
+
+    if is_equip and not is_inv:
+        # Targeted equipment query — only MEP types
+        records = gq.get_mep_elements_on_floor(floor, ifc_f)
+        strategy = "graph_mep_filter"
+    else:
+        # Inventory or general query — all elements on the floor
+        records = gq.get_all_elements_on_floor(floor, ifc_f)
+        strategy = "graph_full_inventory"
+
+    context_lines = gq.format_results_as_context(records, floor)
+    token_count   = sum(len(line.split()) for line in context_lines)
+    elapsed       = time.perf_counter() - _t0
+
+    logger.info(
+        "  ✓ Graph query complete: %d records, strategy=%s [%.2fs]",
+        len(records), strategy, elapsed,
+    )
+
+    return {
+        "retrieved_nodes":     context_lines,
+        "retrieval_source":    "graph",
+        "graph_result_count":  len(records),
+        "context_token_count": token_count,
+        "node_timings": {**state.get("node_timings", {}), "graph_query": elapsed},
     }
