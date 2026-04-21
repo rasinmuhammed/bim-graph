@@ -8,11 +8,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=_ROOT / ".env", extra="ignore")
 
     #LLM
-    groq_api_key:     str = Field("", validation_alias="GROQ_API_KEY")
-    cerebras_api_key: str = Field(..., validation_alias="CEREBRAS_API_KEY")
+    groq_api_key:      str = Field(..., validation_alias="GROQ_API_KEY")
+    cerebras_api_key:  str = Field(..., validation_alias="CEREBRAS_API_KEY")
     cerebras_base_url: str = "https://api.cerebras.ai/v1"
-    llm_model:     str = "llama3.1-8b"                       # fast node: constraint extraction
-    llm_model_big: str = "qwen-3-235b-a22b-instruct-2507"    # generate + evaluate: strongest available
+    llm_model:     str = "llama-3.3-70b-versatile"
+    llm_model_big: str = "llama-3.3-70b-versatile"
 
     #Paths
     chroma_path: str = str(_ROOT / "data" / "chroma_db")

@@ -22,14 +22,15 @@ from benchmark.ifc_oracle import (
     score_cross_floor_answer,
 )
 
-_ROOT      = pathlib.Path(__file__).resolve().parent.parent.parent
-_QUERY_SET = _ROOT / "src" / "benchmark" / "query_set.json"
-_OUT_FILE  = _ROOT / "data" / "benchmark_results.json"
-_IFC_DIR   = _ROOT / "data"
+_ROOT        = pathlib.Path(__file__).resolve().parent.parent.parent
+_QUERY_SET   = _ROOT / "src" / "benchmark" / "query_set.json"
+_OUT_FILE    = _ROOT / "data" / "benchmark_results.json"
+_CHECKPOINT  = _ROOT / "data" / "benchmark_checkpoint.json"
+_IFC_DIR     = _ROOT / "data"
 
 
 def _invoke_with_retry(pipeline, state_in: dict, max_attempts: int = 6) -> dict:
-    """Retry pipeline invocation on Groq 429 rate-limit errors with smart backoff."""
+    """Retry with exponential backoff on any 429 / queue error."""
     import re as _re
     delay = 2.0
     for attempt in range(1, max_attempts + 1):
@@ -37,7 +38,8 @@ def _invoke_with_retry(pipeline, state_in: dict, max_attempts: int = 6) -> dict:
             return pipeline.invoke(state_in)
         except Exception as exc:
             msg = str(exc)
-            if "rate_limit_exceeded" not in msg and "429" not in msg and "rate limit" not in msg.lower():
+            msg_l = msg.lower()
+            if not any(k in msg_l for k in ("rate_limit_exceeded", "429", "rate limit", "queue_exceeded", "high traffic")):
                 raise
             match = _re.search(r"try again in ([0-9.]+)(ms|s)", msg, _re.IGNORECASE)
             if match:
@@ -155,9 +157,19 @@ def _print_table(results: list[dict], queries: list[dict]) -> None:
 def run_benchmark():
     queries = json.loads(_QUERY_SET.read_text())
 
-    results = []
+    done_ids: set[str] = set()
+    results: list[dict] = []
+    if _CHECKPOINT.exists():
+        saved = json.loads(_CHECKPOINT.read_text())
+        results = saved.get("results", [])
+        done_ids = {r["query_id"] for r in results if "query_id" in r}
+        print(f"[checkpoint] Resuming — {len(done_ids)}/{len(queries)} done")
+
     for i, item in enumerate(queries):
-        if i > 0:
+        if item["id"] in done_ids:
+            print(f"[{i+1}/{len(queries)}] SKIP {item['id']} (already done)")
+            continue
+        if results:          # inter-query sleep only between live calls
             time.sleep(3)
         print(f"[{i+1}/{len(queries)}] {item['query'][:60]}...")
         try:
@@ -175,6 +187,8 @@ def run_benchmark():
         except Exception as e:
             print(f"  ERROR: {e}")
             results.append({"query": item["query"], "query_id": item["id"], "error": str(e)})
+
+        _CHECKPOINT.write_text(json.dumps({"results": results}, indent=2))
 
     valid = [r for r in results if "f1" in r]
 
@@ -205,6 +219,8 @@ def run_benchmark():
     }
 
     _OUT_FILE.write_text(json.dumps(summary, indent=2))
+    if _CHECKPOINT.exists():
+        _CHECKPOINT.unlink()   # clean up — run was fully completed
 
     print()
     print("── Overall ─────────────────────────────────────────────────")

@@ -8,6 +8,7 @@ import pickle
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator
 from langchain_ollama import OllamaEmbeddings
+from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
 from tenacity import (
     retry,
@@ -25,33 +26,49 @@ from agent.token_stream import get_token_queue
 load_dotenv()
 
 
-def _is_rate_limit(exc: BaseException) -> bool:
-    """Return True for Groq 429 rate-limit errors so tenacity retries them."""
+_logger = logging.getLogger("bim_graph.nodes")
+
+# starts on Groq, switches to Cerebras on daily quota exhaustion
+_provider: str = "groq"
+
+
+def _is_daily_quota(exc: BaseException) -> bool:
     msg = str(exc).lower()
-    return "rate_limit_exceeded" in msg or "429" in msg or "rate limit" in msg
+    return "tokens per day" in msg or "tpd" in msg
 
 
-# Retry up to 6 times with exponential backoff (1s → 2s → 4s … 32s).
-# Groq's Llama 4 Scout TPM limit on on-demand tier hits fast during benchmark runs.
+def _is_retryable(exc: BaseException) -> bool:
+    global _provider
+    if _is_daily_quota(exc):
+        if _provider == "groq":
+            print("\n[provider] Groq daily quota exhausted — switching to Cerebras permanently.")
+            _provider = "cerebras"
+            _get_llm_fast.cache_clear()
+            _get_llm_big.cache_clear()
+        return True
+    msg = str(exc).lower()
+    return (
+        "rate_limit_exceeded" in msg
+        or "429" in msg
+        or "rate limit" in msg
+        or "queue_exceeded" in msg
+        or "high traffic" in msg
+    )
+
+
 _llm_retry = retry(
-    retry=retry_if_exception(_is_rate_limit),
+    retry=retry_if_exception(_is_retryable),
     wait=wait_exponential(multiplier=1, min=1, max=32),
-    stop=stop_after_attempt(6),
-    before_sleep=before_sleep_log(logging.getLogger("bim_graph.nodes"), logging.WARNING),
+    stop=stop_after_attempt(8),
+    before_sleep=before_sleep_log(_logger, logging.WARNING),
     reraise=True,
 )
 
-# ── Paths (absolute, works regardless of CWD) ─────────────────────────────────
-_CHROMA_PATH  = settings.chroma_path
-_BM25_PATH    = pathlib.Path(settings.bm25_path)   # must be Path, not str
-
-# Fast model for constraint extraction (no thinking tokens, near-instant)
+_CHROMA_PATH   = settings.chroma_path
+_BM25_PATH     = pathlib.Path(settings.bm25_path)
 _LLM_MODEL     = settings.llm_model
-# Full model for generation and evaluation
 _LLM_MODEL_BIG = settings.llm_model_big
 
-# ── IFC domain knowledge ───────────────────────────────────────────────────────
-# Entity types that represent MEP / mechanical / equipment assets in IFC schema
 _MEP_TYPES: set[str] = {
     "IfcFlowTerminal", "IfcFlowFitting", "IfcFlowSegment",
     "IfcFlowController", "IfcDistributionFlowElement",
@@ -67,7 +84,6 @@ _MEP_TYPES: set[str] = {
     "IfcSensor", "IfcActuator", "IfcController",
 }
 
-# Human-readable guide for the LLM explaining what IFC types mean
 _IFC_TYPE_GUIDE = """\
 IFC entity type → domain meaning (use this to identify asset categories):
   • IfcFlowTerminal, IfcAirTerminal          → HVAC terminals / diffusers / grilles
@@ -112,20 +128,29 @@ def _get_chroma_collection():
     return client.get_or_create_collection(name="bim_baseline")
 
 @lru_cache(maxsize=1)
-def _get_llm_fast() -> ChatOpenAI:
-    return ChatOpenAI(
-        model=_LLM_MODEL,
-        api_key=settings.cerebras_api_key,
-        base_url=settings.cerebras_base_url,
-    )
+def _get_llm_fast():
+    if _provider == "cerebras":
+        _logger.info("LLM fast: Cerebras llama3.1-8b")
+        return ChatOpenAI(
+            model="llama3.1-8b",
+            api_key=settings.cerebras_api_key,
+            base_url=settings.cerebras_base_url,
+        )
+    _logger.info("LLM fast: Groq %s", settings.llm_model)
+    return ChatGroq(model=settings.llm_model, api_key=settings.groq_api_key)
+
 
 @lru_cache(maxsize=1)
-def _get_llm_big() -> ChatOpenAI:
-    return ChatOpenAI(
-        model=_LLM_MODEL_BIG,
-        api_key=settings.cerebras_api_key,
-        base_url=settings.cerebras_base_url,
-    )
+def _get_llm_big():
+    if _provider == "cerebras":
+        _logger.info("LLM big: Cerebras qwen-3-235b")
+        return ChatOpenAI(
+            model="qwen-3-235b-a22b-instruct-2507",
+            api_key=settings.cerebras_api_key,
+            base_url=settings.cerebras_base_url,
+        )
+    _logger.info("LLM big: Groq %s", settings.llm_model_big)
+    return ChatGroq(model=settings.llm_model_big, api_key=settings.groq_api_key)
 
 @lru_cache(maxsize=1)
 def _get_bm25_payload() -> dict | None:
@@ -568,6 +593,66 @@ Evaluate the answer and return your verdict as a JSON object with keys "spatial_
     }
 
 
+_FOUNDATION_KW = {"foundation", "fdn", "basement", "cellar", "underground", "sub-grade"}
+_GROUND_KW     = {"ground floor", "ground level", "first floor", "lower floor",
+                   "lower level", "parterre", "erd", "00 ground"}
+_UPPER_KW      = {"upper floor", "upper level", "second floor", "top floor",
+                   "obergeschoss", "dachgeschoss", "attic", "penthouse"}
+# "roof" absent so exact-match still catches an actual "Roof" storey
+_ROOF_KW       = {"roof", "rooftop"}
+
+
+def _resolve_storey(ifc_model, target: str):
+    """Resolve informal floor names to IfcBuildingStorey via exact → substring → elevation rules → fuzzy."""
+    import difflib
+
+    storeys = [s for s in ifc_model.by_type("IfcBuildingStorey") if s.Name]
+    if not storeys:
+        return None
+
+    t = target.lower().strip()
+
+    for s in storeys:
+        if s.Name.lower().strip() == t:
+            return s
+
+    for s in storeys:
+        n = s.Name.lower()
+        if t in n or n in t:
+            return s
+
+    def _elev(s):
+        try:
+            return float(s.Elevation or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    by_elev = sorted(storeys, key=_elev)
+
+    if any(k in t for k in _FOUNDATION_KW):
+        for s in by_elev:
+            if any(k in s.Name.lower() for k in _FOUNDATION_KW):
+                return s
+        return by_elev[0]
+
+    if any(k in t for k in _GROUND_KW) or t in {"ground floor", "ground level", "first floor"}:
+        non_fdn = [s for s in by_elev if not any(k in s.Name.lower() for k in _FOUNDATION_KW)]
+        return (non_fdn or by_elev)[0]
+
+    if any(k in t for k in _UPPER_KW) or "upper" in t or "second" in t:
+        non_roof = [s for s in by_elev if not any(k in s.Name.lower() for k in _ROOF_KW)]
+        return (non_roof or by_elev)[-1]
+
+    names_lower = [s.Name.lower() for s in storeys]
+    close = difflib.get_close_matches(t, names_lower, n=1, cutoff=0.5)
+    if close:
+        for s in storeys:
+            if s.Name.lower() == close[0]:
+                return s
+
+    return None
+
+
 # ── Node 4 ─────────────────────────────────────────────────────────────────────
 def spatial_ast_retrieval(state: BIMGraphState) -> dict:
     """
@@ -598,27 +683,14 @@ def spatial_ast_retrieval(state: BIMGraphState) -> dict:
          return {"retrieved_nodes": [], "retrieval_source": "ast", "correction_log": state.get("correction_log", [])}
          
     ifc_model     = _get_ifc(ifc_filename)
-    target_storey = None
+    target_storey = _resolve_storey(ifc_model, target)
 
-    # 1: exact match
-    for storey in ifc_model.by_type("IfcBuildingStorey"):
-        if storey.Name and storey.Name.lower().strip() == target.lower().strip():
-            target_storey = storey
-            logger.info("Exact storey match: %r (GUID: %s)", storey.Name, storey.GlobalId)
-            break
-
-    #2: substring fallback (only if exact fails)
-    if target_storey is None:
-        for storey in ifc_model.by_type("IfcBuildingStorey"):
-            if storey.Name and target.lower() in storey.Name.lower():
-                target_storey = storey
-                logger.info("Substring storey match: %r (GUID: %s)", storey.Name, storey.GlobalId)
-                break
-    
     if target_storey is None:
         logger.error("  No storey matching %r found in IFC model.", target)
         context_lines = [f"ERROR: No storey matching '{target}' found in IFC model."]
     else:
+        logger.info("Storey resolved: %r → %r (GUID: %s)",
+                    target, target_storey.Name, target_storey.GlobalId)
         # Spatial-proof header — tells the generate node this is verified data
         context_lines = [
             f"--- [SOURCE: DETERMINISTIC IFC AST TRAVERSAL | "
