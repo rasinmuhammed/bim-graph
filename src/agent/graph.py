@@ -74,8 +74,27 @@ def route_after_extraction(state: BIMGraphState) -> str:
     has_floor = bool(state.get("spatial_constraints"))
 
     if has_floor:
+
         return "graph_query"   # graph-first when we know the floor
     return "retrieve_hybrid"
+
+
+def route_after_graph_query(state: BIMGraphState) -> str:
+    """
+    Confidence router — jumps straight to AST proof if Neo4j is empty.
+    
+    If Neo4j returns 0 results for a known floor, the dense search fallback (hybrid)
+    is likely to fail too. Skipping 'generate' and 'evaluate' for the empty set
+    saves 2-3 seconds of useless LLM latency.
+    """
+    source = state.get("retrieval_source")
+    count  = state.get("graph_result_count", 0)
+    
+    if source == "graph_unavailable" or count == 0:
+        return "spatial_ast_retrieval"
+        
+    return "generate"
+
 
 
 builder = StateGraph(BIMGraphState)
@@ -92,9 +111,13 @@ builder.add_node("spatial_ast_retrieval",       spatial_ast_retrieval)
 builder.set_entry_point("extract_spatial_constraints")
 builder.add_conditional_edges("extract_spatial_constraints", route_after_extraction)
 builder.add_edge("retrieve_hybrid",             "generate")
-builder.add_edge("graph_query",                 "generate")
-builder.add_conditional_edges("generate",       route_after_generate)   # graph → END, others → evaluate
+
+# Graph query now has its own confidence router
+builder.add_conditional_edges("graph_query",    route_after_graph_query)
+
+builder.add_conditional_edges("generate",       route_after_generate)   # graph/ast → END, others → evaluate
 builder.add_conditional_edges("evaluate",       should_self_heal)
 builder.add_edge("spatial_ast_retrieval",       "generate")
+
 
 graph = builder.compile()

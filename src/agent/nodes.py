@@ -560,6 +560,7 @@ def evaluate(state: BIMGraphState) -> dict:
 Answer under review:
 \"\"\"{state["generation"]}\"\"\"
 
+
 User requested assets specifically on: {state["spatial_constraints"]}
 
 {source_context}
@@ -794,6 +795,53 @@ def spatial_ast_retrieval(state: BIMGraphState) -> dict:
     }
 
 
+def _resolve_graph_storey(target: str, available_names: list[str]) -> str | None:
+    """Fuzzy match informal floor names against strict names in Neo4j."""
+    import difflib
+    if not available_names:
+        return None
+        
+    t = target.lower().strip()
+    
+    # 1. Exact match
+    for n in available_names:
+        if n.lower().strip() == t:
+            return n
+            
+    # 2. Substring match
+    for n in available_names:
+        nl = n.lower()
+        if t in nl or nl in t:
+            return n
+            
+    # 3. Known keyword mappings (Foundation/Ground/Upper)
+    if any(k in t for k in _FOUNDATION_KW):
+        for n in available_names:
+            if any(k in n.lower() for k in _FOUNDATION_KW):
+                return n
+                
+    if any(k in t for k in _GROUND_KW):
+        for n in available_names:
+            if any(k in n.lower() for k in _GROUND_KW):
+                return n
+                
+    if any(k in t for k in _UPPER_KW):
+        for n in available_names:
+            if any(k in n.lower() for k in _UPPER_KW):
+                return n
+                
+    # 4. Fuzzy difflib match
+    close = difflib.get_close_matches(t, [n.lower() for n in available_names], n=1, cutoff=0.5)
+    if close:
+        # Find original name
+        for n in available_names:
+            if n.lower() == close[0]:
+                return n
+                
+    return None
+
+
+
 # ── Node 5 ─────────────────────────────────────────────────────────────────────
 def graph_query(state: BIMGraphState) -> dict:
     """
@@ -840,21 +888,29 @@ def graph_query(state: BIMGraphState) -> dict:
             "node_timings": {**state.get("node_timings", {}), "graph_query": time.perf_counter() - _t0},
         }
 
+    # ── Fuzzy Floor Resolution ────────────────────────────────────────────────
+    # Extracted floor names (e.g. "ground floor") often mismatch IFC names (e.g. "Level 1")
+    available_names = gq.get_all_storey_names(ifc_f)
+    resolved_floor  = _resolve_graph_storey(floor, available_names)
+    
+    if resolved_floor:
+        if resolved_floor != floor:
+            logger.info("  Floor resolved: %r → %r", floor, resolved_floor)
+        floor = resolved_floor
+    else:
+        logger.warning("  Could not resolve floor %r in Neo4j. Available: %r", floor, available_names)
+
     # ── Select Cypher query based on query intent ──────────────────────────────
-    # is_inventory_query = True  → user wants EVERYTHING on the floor
-    # is_equipment_query = True  → user wants only MEP/mechanical assets
-    # otherwise                  → return all elements (let generate filter)
     is_equip = _is_equipment_query(state.get("query", ""))
     is_inv   = state.get("is_inventory_query", False)
 
     if is_equip and not is_inv:
-        # Targeted equipment query — only MEP types
         records = gq.get_mep_elements_on_floor(floor, ifc_f)
         strategy = "graph_mep_filter"
     else:
-        # Inventory or general query — all elements on the floor
         records = gq.get_all_elements_on_floor(floor, ifc_f)
         strategy = "graph_full_inventory"
+
 
     context_lines = gq.format_results_as_context(records, floor)
     token_count   = sum(len(line.split()) for line in context_lines)

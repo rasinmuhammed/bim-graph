@@ -198,6 +198,17 @@ def is_file_loaded(ifc_file: str) -> bool:
         return result.single()["n"] > 0
 
 
+def get_all_storey_names(ifc_file: str) -> list[str]:
+    """Return all available storey names in the graph for a specific file."""
+    cypher = "MATCH (s:Storey {file: $file}) RETURN s.name AS name"
+    with _get_driver().session() as session:
+        result = session.run(cypher, file=ifc_file)
+        return [r["name"] for r in result]
+
+
+
+
+
 def format_results_as_context(results: list[dict], floor: str) -> list[str]:
     """
     Convert Neo4j query results into the same string format used by
