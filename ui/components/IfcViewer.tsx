@@ -1,5 +1,20 @@
 "use client";
 
+// web-ifc checks self.crossOriginIsolated to decide MT vs ST WASM.
+// MT WASM ("Import #0 'a'") doesn't work in this bundled context —
+// override the flag before any web-ifc code runs.
+if (typeof self !== "undefined") {
+  try {
+    Object.defineProperty(self, "crossOriginIsolated", {
+      value: false,
+      configurable: true,
+      writable: true,
+    });
+  } catch {
+    // already non-configurable; leave as-is
+  }
+}
+
 import { useEffect, useRef } from "react";
 
 interface Props {
