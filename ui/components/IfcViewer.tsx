@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef } from "react";
 
 interface Props {
   ifcUrl: string | null;
@@ -40,7 +40,14 @@ async function createViewer(container: HTMLDivElement): Promise<ViewerHandle> {
   const fragManager = components.get(OBC.FragmentsManager);
   const highlighter = components.get(OBCF.Highlighter);
 
+  // FragmentsManager must be initialized before IfcLoader or Highlighter
+  fragManager.init("/fragments-worker.mjs");
+
+  // Point IfcLoader at the wasm files we serve from /public
+  ifcLoader.settings.wasm.path    = "/";
+  ifcLoader.settings.wasm.absolute = true;
   await ifcLoader.setup();
+
   highlighter.setup({ world });
 
   let currentModel: Awaited<ReturnType<typeof ifcLoader.load>> | null = null;
