@@ -34,9 +34,9 @@ _API_DIR      = pathlib.Path(__file__).resolve().parent
 _SRC_DIR      = _API_DIR.parent
 _PROJECT_ROOT = _SRC_DIR.parent
 
-from fastapi import FastAPI, Query as QParam, HTTPException
+from fastapi import FastAPI, Query as QParam, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 
 from agent.graph import graph
@@ -186,6 +186,70 @@ async def get_floors(f: str = QParam("Duplex_A_20110907.ifc", description="IFC F
         raise HTTPException(status_code=404, detail=f"IFC file {f} not found.")
     floors = list_all_floors(ifc_path)
     return {"floors": floors}
+
+
+@app.get("/models", tags=["IFC"])
+async def list_models():
+    """Return all IFC files available in the data directory."""
+    files = sorted(p.name for p in (_PROJECT_ROOT / "data").glob("*.ifc"))
+    return {"models": files}
+
+
+@app.get("/ifc/{filename}", tags=["IFC"])
+async def serve_ifc(filename: str):
+    """Serve raw IFC file for in-browser 3D loading."""
+    safe = pathlib.Path(filename).name
+    if safe != filename or not filename.endswith(".ifc"):
+        raise HTTPException(400, "Invalid filename.")
+    path = _PROJECT_ROOT / "data" / safe
+    if not path.exists():
+        raise HTTPException(404, f"{filename} not found.")
+    return FileResponse(path, media_type="application/octet-stream",
+                        headers={"Content-Disposition": f'inline; filename="{safe}"'})
+
+
+# upload job registry — maps job_id → status dict
+_upload_jobs: dict[str, dict] = {}
+
+
+@app.post("/upload", tags=["IFC"])
+async def upload_ifc(file: UploadFile = File(...)):
+    """Accept an IFC upload, save it, and re-index in the background."""
+    if not file.filename or not file.filename.endswith(".ifc"):
+        raise HTTPException(400, "Only .ifc files accepted.")
+    safe = pathlib.Path(file.filename).name
+    dest = _PROJECT_ROOT / "data" / safe
+    job_id = uuid.uuid4().hex[:8]
+    _upload_jobs[job_id] = {"status": "saving", "filename": safe}
+
+    content = await file.read()
+    dest.write_bytes(content)
+    _upload_jobs[job_id]["status"] = "indexing"
+    logger.info("upload saved %s (%d bytes) — indexing job %s", safe, len(content), job_id)
+
+    def _index():
+        try:
+            from indexer.spatial_indexer import index_single_file, build_bm25_from_chroma
+            index_single_file(str(dest))
+            build_bm25_from_chroma()
+            _upload_jobs[job_id]["status"] = "ready"
+            logger.info("indexing complete for job %s", job_id)
+        except Exception as exc:
+            _upload_jobs[job_id]["status"] = "error"
+            _upload_jobs[job_id]["error"] = str(exc)
+            logger.error("indexing failed for job %s: %s", job_id, exc)
+
+    threading.Thread(target=_index, daemon=True).start()
+    return {"job_id": job_id, "filename": safe, "status": "indexing"}
+
+
+@app.get("/upload/{job_id}", tags=["IFC"])
+async def upload_status(job_id: str):
+    """Poll indexing status for an uploaded IFC file."""
+    job = _upload_jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found.")
+    return job
 
 
 @app.get("/benchmark", tags=["Research"])

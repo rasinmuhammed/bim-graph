@@ -211,6 +211,12 @@ def index_ifc_file(ifc_path: pathlib.Path, client: chromadb.PersistentClient, gr
     return len(all_docs)
 
 
+def index_single_file(ifc_path_str: str) -> int:
+    """Convenience wrapper for the upload endpoint — creates its own ChromaDB client."""
+    client = chromadb.PersistentClient(path=str(_CHROMA_PATH))
+    return index_ifc_file(pathlib.Path(ifc_path_str), client)
+
+
 def build_bm25_from_chroma() -> None:
     """Rebuild the BM25 index from whatever is currently in ChromaDB."""
     logger.info("Rebuilding BM25 index from ChromaDB...")
