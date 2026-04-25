@@ -444,34 +444,42 @@ def generate(state: BIMGraphState) -> dict:
         prompt = f"""You are a BIM analyst reviewing verified BIM data.
 
 The context below was extracted via {source_label} and is SPATIALLY CONFIRMED.
-Every element listed is confirmed on the floor stated in the header. Do not express doubt about floor placement.
+Every element listed is confirmed on the floor stated. Do not express doubt about floor placement.
 
 {_IFC_TYPE_GUIDE}
 
-Context (spatially verified data):
+Context (format: IFC_Type | Name | GUID):
 {context}
 
 Query: {state["query"]}
 
 Instructions:
-1. If the query asks for specific equipment, use the IFC type guide to identify matches.
-   If the query asks 'What is present?', 'List all', or implies a general inventory, list EVERY entity in the context.
-2. For each matching asset, output a line: [Entity Type] | [Name] | [GUID]
-3. Do NOT say "I cannot determine" or "insufficient data" — the spatial data is already verified.
-4. If the context truly contains zero matching entities, respond with:
-   "No matching assets of the requested type were found on this floor in the IFC model."
+1. Use the IFC type guide to identify relevant element types for the query.
+   For inventory/listing queries, include EVERY element from the context.
+2. Open with one clear summary sentence (e.g. "There are 8 single-flush doors on Level 2.").
+3. List each matching element on its own line:
+   • [human-readable name and size if available] [GUID]
+   The GUID must be enclosed in square brackets exactly as it appears in the context.
+4. Group by type with a header when there are multiple types (e.g. "Doors (8):").
+5. End with one insight sentence if relevant (e.g. dominant size, material, or count).
+6. Do NOT say "I cannot determine" or "insufficient data" — the spatial data is verified.
+7. If zero matching entities exist: "No [type] found on this floor in the IFC model."
 
 Answer:"""
     else:
-        # Dense / hybrid pass — intentionally neutral to prove spatial blindness in the baseline
+        # Dense / hybrid pass
         prompt = f"""You are a BIM analyst.
 Use ONLY the following context to answer the query. Do not invent data not present in the context.
-The context was retrieved via semantic search and may NOT preserve spatial floor hierarchy.
+The context was retrieved via semantic search and may not preserve spatial floor hierarchy.
 
 Context:
 {context}
 
 Query: {state["query"]}
+
+If the context contains specific elements, open with a summary sentence, then list each as:
+• [human-readable description] [GUID]
+with the GUID enclosed in square brackets.
 
 Answer:"""
 
@@ -497,10 +505,11 @@ Answer:"""
     raw_answer = "".join(chunks)
     answer     = re.sub(r"<think>.*?</think>", "", raw_answer, flags=re.DOTALL).strip()
 
-    # Extract IFC GUIDs (22-char base64-like strings) from the generated answer.
-    # Stored explicitly in state so the benchmark oracle and evaluator can use
-    # the exact set without re-running regex on free text downstream.
-    extracted_guids = re.findall(r"[A-Za-z0-9$_]{22}", answer)
+    # Extract IFC GUIDs from the answer. Primary: square-bracket format [GUID].
+    # Fallback: pipe-delimited "| GUID" or "GUID: GUID" formats from older responses.
+    extracted_guids = re.findall(r"\[([A-Za-z0-9$_]{22})\]", answer)
+    if not extracted_guids:
+        extracted_guids = re.findall(r"(?:GUID:\s*|(?<=\|\s))([A-Za-z0-9$_]{22})(?=\s*(?:\||$))", answer)
 
     elapsed     = time.perf_counter() - _t0
     token_count = len(context.split())

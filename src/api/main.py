@@ -291,7 +291,7 @@ async def query_pipeline(req: QueryRequest):
 
     state = graph.invoke(_blank_state(req.query, req.ifc_filename, rid))
 
-    cache_set(req.query, state.get("generation", ""), state.get("correction_log", []))
+    cache_set(req.query, state.get("generation", ""), state.get("correction_log", []), state.get("extracted_guids", []))
 
     latency_ms = int((time.time() - t0) * 1000)
     logger.info(
@@ -345,10 +345,16 @@ async def query_stream(
                 "latency_ms":   int((time.time() - t0) * 1000),
             })
             yield _sse("final", {
-                "answer":           cached["answer"],
-                "correction_log":   cached.get("correction_log", []),
-                "cache_hit":        True,
-                "latency_ms":       int((time.time() - t0) * 1000),
+                "answer":              cached["answer"],
+                "correction_log":      cached.get("correction_log", []),
+                "cache_hit":           True,
+                "latency_ms":          int((time.time() - t0) * 1000),
+                "retrieval_source":    "cache",
+                "self_healed":         False,
+                "node_timings":        {},
+                "graph_result_count":  0,
+                "extracted_guids":     cached.get("extracted_guids", []),
+                "spatial_constraints": "",
             })
             return
 
@@ -399,7 +405,7 @@ async def query_stream(
 
             if kind == "done":
                 # Write to cache
-                cache_set(q, final_state.get("generation", ""), final_state.get("correction_log", []))
+                cache_set(q, final_state.get("generation", ""), final_state.get("correction_log", []), final_state.get("extracted_guids", []))
                 latency_ms = int((time.time() - t0) * 1000)
                 logger.info(
                     "stream_end source=%s self_healed=%s latency_ms=%d",
@@ -417,6 +423,7 @@ async def query_stream(
                     "node_timings":        final_state.get("node_timings", {}),
                     "context_token_count": final_state.get("context_token_count", 0),
                     "graph_result_count":  final_state.get("graph_result_count", 0),
+                    "extracted_guids":     final_state.get("extracted_guids", []),
                     "latency_ms":          latency_ms,
                     "request_id":          rid,
                 })

@@ -370,7 +370,7 @@ export default function BIMGraphUI() {
               <div className="flex flex-wrap gap-1.5">
                 {result.cache_hit   && <Badge color="emerald">CACHED</Badge>}
                 {result.self_healed && <Badge color="amber">SELF-HEALED</Badge>}
-                <Badge color="slate">{result.retrieval_source.toUpperCase()}</Badge>
+                {result.retrieval_source && <Badge color="slate">{result.retrieval_source.toUpperCase()}</Badge>}
                 {result.extracted_guids?.length > 0 && (
                   <Badge color="orange">{result.extracted_guids.length} ELEMENTS</Badge>
                 )}

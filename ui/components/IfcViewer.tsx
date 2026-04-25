@@ -81,7 +81,6 @@ async function createViewer(container: HTMLDivElement): Promise<ViewerHandle> {
 
         const rawVerts   = ifcApi.GetVertexArray(geomData.GetVertexData(), geomData.GetVertexDataSize());
         const rawIndices = ifcApi.GetIndexArray(geomData.GetIndexData(), geomData.GetIndexDataSize());
-        geomData.delete?.();
 
         // web-ifc interleaves position + normal: [x,y,z,nx,ny,nz, ...]
         const vertCount = rawVerts.length / 6;
@@ -124,7 +123,6 @@ async function createViewer(container: HTMLDivElement): Promise<ViewerHandle> {
         sceneBBox.union(mb);
       }
 
-      flatMesh.delete?.();
       if (guid && meshGroup.length) guidMap.set(guid, meshGroup);
     });
 
@@ -148,15 +146,56 @@ async function createViewer(container: HTMLDivElement): Promise<ViewerHandle> {
   const HIGHLIGHT = new THREE.Color(0xff6600);
 
   const highlight = async (guids: string[]) => {
-    for (const mesh of highlighted) {
-      (mesh.material as MeshLambertMaterial).emissive.set(0x000000);
+    // Restore previously dimmed meshes
+    for (const mesh of modelMeshes) {
+      const mat = mesh.material as MeshLambertMaterial;
+      mat.emissive.set(0x000000);
+      if (mesh.userData._origOpacity !== undefined) {
+        mat.opacity     = mesh.userData._origOpacity;
+        mat.transparent = mesh.userData._origTransparent;
+        delete mesh.userData._origOpacity;
+        delete mesh.userData._origTransparent;
+      }
     }
     highlighted = [];
 
+    if (!guids.length) return;
+
+    const selectedSet = new Set<Mesh>();
     for (const guid of guids) {
       for (const mesh of guidMap.get(guid) ?? []) {
         (mesh.material as MeshLambertMaterial).emissive.copy(HIGHLIGHT);
         highlighted.push(mesh);
+        selectedSet.add(mesh);
+      }
+    }
+
+    // Dim everything not in selection
+    for (const mesh of modelMeshes) {
+      if (!selectedSet.has(mesh)) {
+        const mat = mesh.material as MeshLambertMaterial;
+        mesh.userData._origOpacity     = mat.opacity;
+        mesh.userData._origTransparent = mat.transparent;
+        mat.opacity     = 0.08;
+        mat.transparent = true;
+      }
+    }
+
+    // Fly camera to selection bounding box
+    if (highlighted.length > 0) {
+      const bbox = new THREE.Box3();
+      for (const mesh of highlighted) {
+        bbox.union(new THREE.Box3().setFromObject(mesh));
+      }
+      if (!bbox.isEmpty()) {
+        const center = bbox.getCenter(new THREE.Vector3());
+        const size   = bbox.getSize(new THREE.Vector3());
+        const dist   = Math.max(size.x, size.y, size.z, 2) * 3;
+        world.camera.controls.setLookAt(
+          center.x + dist, center.y + dist * 0.6, center.z + dist,
+          center.x, center.y, center.z,
+          true,
+        );
       }
     }
   };
@@ -177,7 +216,9 @@ export default function IfcViewer({ ifcUrl, highlightGuids }: Props) {
 
   useEffect(() => {
     if (!containerRef.current) return;
+    let cancelled = false;
     createViewer(containerRef.current).then(handle => {
+      if (cancelled) { handle.dispose(); return; }
       viewerRef.current = handle;
       if (ifcUrl) {
         handle.load(ifcUrl).catch(console.error);
@@ -185,6 +226,7 @@ export default function IfcViewer({ ifcUrl, highlightGuids }: Props) {
       }
     });
     return () => {
+      cancelled = true;
       viewerRef.current?.dispose();
       viewerRef.current = null;
       currentUrl.current = null;

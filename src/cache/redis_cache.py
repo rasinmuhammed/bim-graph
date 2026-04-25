@@ -41,20 +41,26 @@ def _make_key(query: str) -> str:
 def cache_get(query: str) -> dict | None:
     """
     Look up a cached result.
-    Returns {"answer": str, "correction_log": list} or None on miss.
+    Returns {"answer": str, "correction_log": list, "extracted_guids": list} or None on miss.
     """
     key  = _make_key(query)
     data = _client.get(key)
     if data:
         logger.info("  [Cache] ⚡ CACHE HIT  key=%s…", key[-8:])
-        return json.loads(data)
+        result = json.loads(data)
+        result.setdefault("extracted_guids", [])
+        return result
     logger.info("  [Cache] MISS  key=%s…", key[-8:])
     return None
 
 
-def cache_set(query: str, answer: str, correction_log: list) -> None:
+def cache_set(query: str, answer: str, correction_log: list, extracted_guids: list | None = None) -> None:
     """Store a successful result with TTL."""
     key     = _make_key(query)
-    payload = json.dumps({"answer": answer, "correction_log": correction_log})
+    payload = json.dumps({
+        "answer":          answer,
+        "correction_log":  correction_log,
+        "extracted_guids": extracted_guids or [],
+    })
     _client.setex(key, _TTL_SECONDS, payload)
     logger.info("  [Cache] Stored  key=%s…  TTL=%ds", key[-8:], _TTL_SECONDS)
