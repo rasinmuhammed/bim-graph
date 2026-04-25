@@ -43,6 +43,10 @@ async function createViewer(container: HTMLDivElement): Promise<ViewerHandle> {
   // FragmentsManager must be initialized before IfcLoader or Highlighter
   fragManager.init("/fragments-worker.mjs");
 
+  // MT WASM needs COEP/COOP headers; force ST to avoid the "Import #0 'a'" crash
+  const _origInit = ifcLoader.webIfc.Init.bind(ifcLoader.webIfc);
+  ifcLoader.webIfc.Init = (handler?) => _origInit(handler, true);
+
   // Point IfcLoader at the wasm files we serve from /public
   ifcLoader.settings.wasm.path    = "/";
   ifcLoader.settings.wasm.absolute = true;
