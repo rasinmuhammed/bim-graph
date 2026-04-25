@@ -43,15 +43,6 @@ async function createViewer(container: HTMLDivElement): Promise<ViewerHandle> {
   // FragmentsManager must be initialized before IfcLoader or Highlighter
   fragManager.init("/fragments-worker.mjs");
 
-  // web-ifc caches the MT/ST WASM factory in a module-level variable on first Init().
-  // IfcImporter creates its own internal IfcAPI instances, so patching ifcLoader.webIfc
-  // doesn't help. Instead, pre-seed the cache to the ST factory before any IfcImporter
-  // runs — all subsequent Init() calls will reuse it and avoid the MT "Import #0 'a'" crash.
-  const WEBIFC = await import("web-ifc");
-  const _preInitApi = new WEBIFC.IfcAPI();
-  _preInitApi.SetWasmPath("/", true);
-  await _preInitApi.Init(undefined, true); // forceSingleThread=true → sets module-level cache to ST
-
   // Point IfcLoader at the wasm files we serve from /public
   ifcLoader.settings.wasm.path    = "/";
   ifcLoader.settings.wasm.absolute = true;
