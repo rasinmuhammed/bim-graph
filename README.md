@@ -1,6 +1,6 @@
 # BIM-Graph
 
-A self-healing RAG pipeline for querying Building Information Modeling (BIM) data — specifically IFC files. It started as an experiment to prove that standard chunked-text RAG is the wrong approach for spatial data, and turned into a full agentic system with a graph database at its core.
+A RAG pipeline for querying Building Information Modeling (BIM) data — specifically IFC files. It started as an experiment to prove that standard chunked-text RAG is the wrong approach for spatial data, and turned into a full agentic system with a graph database at its core.
 
 The short version: ask it "What HVAC equipment is on Level 2?" and it will go find the exact answer using Neo4j, cross-check it, and fall back to deterministic IFC AST traversal if anything looks wrong.
 
