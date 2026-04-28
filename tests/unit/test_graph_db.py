@@ -75,6 +75,7 @@ def test_graph_query_returns_mep_elements_for_equipment_query():
 
     with patch("graph_db.queries.is_graph_available", return_value=True), \
          patch("graph_db.queries.is_file_loaded", return_value=True), \
+         patch("graph_db.queries.get_all_storey_names", return_value=["Level 2"]), \
          patch("graph_db.queries.get_mep_elements_on_floor", return_value=mock_records) as mock_mep, \
          patch("graph_db.queries.get_all_elements_on_floor", return_value=[]) as mock_all:
 
@@ -107,6 +108,7 @@ def test_graph_query_returns_all_elements_for_inventory_query():
 
     with patch("graph_db.queries.is_graph_available", return_value=True), \
          patch("graph_db.queries.is_file_loaded", return_value=True), \
+         patch("graph_db.queries.get_all_storey_names", return_value=["Level 2"]), \
          patch("graph_db.queries.get_all_elements_on_floor", return_value=mock_records) as mock_all, \
          patch("graph_db.queries.get_mep_elements_on_floor", return_value=[]) as mock_mep:
 

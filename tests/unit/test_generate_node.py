@@ -133,6 +133,7 @@ def test_pipeline_graph_path_skips_evaluate():
          patch("agent.nodes.get_token_queue", return_value=None), \
          patch("graph_db.queries.is_graph_available", return_value=True), \
          patch("graph_db.queries.is_file_loaded",     return_value=True), \
+         patch("graph_db.queries.get_all_storey_names", return_value=["Level 2"]), \
          patch("graph_db.queries.get_mep_elements_on_floor", return_value=mock_records):
 
         from agent.graph import graph
