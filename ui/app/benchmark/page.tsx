@@ -1,4 +1,5 @@
 "use client";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 
 interface CategoryStats {
@@ -98,9 +99,9 @@ export default function BenchmarkPage() {
 
       {/* Header */}
       <div className="mb-8">
-        <a href="/" className="text-xs text-slate-500 hover:text-white transition-colors mb-4 inline-block">
+        <Link href="/" className="text-xs text-slate-500 hover:text-white transition-colors mb-4 inline-block">
           ← Back to pipeline
-        </a>
+        </Link>
         <h1 className="text-xl font-semibold">Benchmark Results</h1>
         <p className="text-xs text-slate-500 mt-1">
           {data.total_queries} queries · GUID-level P/R/F1 vs IFC oracle · cross-floor: coverage scoring

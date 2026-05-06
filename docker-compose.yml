@@ -28,6 +28,9 @@ services:
       - ./logs:/app/logs
     environment:
       - GROQ_API_KEY=${GROQ_API_KEY}
+      - CEREBRAS_API_KEY=${CEREBRAS_API_KEY:-}
+      - DEMO_UPLOAD_ENABLED=${DEMO_UPLOAD_ENABLED:-false}
+      - ADMIN_TOKEN=${ADMIN_TOKEN:-}
       - REDIS_HOST=redis
       - NEO4J_URI=bolt://neo4j:7687
     restart: unless-stopped
@@ -38,6 +41,8 @@ services:
       dockerfile: Dockerfile
     ports: ["3000:3000"]
     depends_on: [api]
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
     restart: unless-stopped
 
 volumes:

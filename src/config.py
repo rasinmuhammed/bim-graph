@@ -9,7 +9,7 @@ class Settings(BaseSettings):
 
     #LLM
     groq_api_key:      str = Field(..., validation_alias="GROQ_API_KEY")
-    cerebras_api_key:  str = Field(..., validation_alias="CEREBRAS_API_KEY")
+    cerebras_api_key:  str = Field("", validation_alias="CEREBRAS_API_KEY")
     cerebras_base_url: str = "https://api.cerebras.ai/v1"
     llm_model:     str = "llama-3.3-70b-versatile"
     llm_model_big: str = "llama-3.3-70b-versatile"
@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     cache_ttl_seconds: int = 3600
     redis_host: str = "localhost"
     redis_port: int = 6379
+    demo_upload_enabled: bool = Field(False, validation_alias="DEMO_UPLOAD_ENABLED")
+    admin_token: str = Field("", validation_alias="ADMIN_TOKEN")
 
     # Neo4j
     neo4j_uri:      str = "bolt://localhost:7687"

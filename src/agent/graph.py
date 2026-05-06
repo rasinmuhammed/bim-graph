@@ -72,25 +72,23 @@ def route_after_extraction(state: BIMGraphState) -> str:
     the evaluator will fail, and should_self_heal escalates to AST.
     """
     has_floor = bool(state.get("spatial_constraints"))
+    structural_kind = state.get("query_kind") in {"cross_floor_count", "multi_floor", "negation"}
 
-    if has_floor:
-
+    if has_floor or structural_kind:
         return "graph_query"   # graph-first when we know the floor
     return "retrieve_hybrid"
 
 
 def route_after_graph_query(state: BIMGraphState) -> str:
     """
-    Confidence router — jumps straight to AST proof if Neo4j is empty.
-    
-    If Neo4j returns 0 results for a known floor, the dense search fallback (hybrid)
-    is likely to fail too. Skipping 'generate' and 'evaluate' for the empty set
-    saves 2-3 seconds of useless LLM latency.
+    Confidence router after graph lookup.
+
+    Neo4j returning 0 rows is still a verified answer for type-specific queries
+    ("no boilers on Level 1"). Only infrastructure/file failures need AST.
     """
     source = state.get("retrieval_source")
-    count  = state.get("graph_result_count", 0)
     
-    if source == "graph_unavailable" or count == 0:
+    if source == "graph_unavailable":
         return "spatial_ast_retrieval"
         
     return "generate"

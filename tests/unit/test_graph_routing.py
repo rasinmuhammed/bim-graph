@@ -44,3 +44,25 @@ def test_route_after_extraction_no_floor_goes_to_dense():
         "spatial_constraints": "",
     }
     assert route_after_extraction(state) == "retrieve_hybrid"
+
+
+def test_route_after_extraction_cross_floor_count_goes_to_graph():
+    """Cross-floor structural questions should use graph aggregation, not dense RAG."""
+    from agent.graph import route_after_extraction
+
+    state = {
+        "query_kind": "cross_floor_count",
+        "spatial_constraints": "",
+    }
+    assert route_after_extraction(state) == "graph_query"
+
+
+def test_route_after_graph_query_zero_result_still_generates():
+    """A zero-row graph result is a verified empty answer, not a retrieval failure."""
+    from agent.graph import route_after_graph_query
+
+    state = {
+        "retrieval_source": "graph",
+        "graph_result_count": 0,
+    }
+    assert route_after_graph_query(state) == "generate"

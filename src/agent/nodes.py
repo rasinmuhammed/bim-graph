@@ -192,6 +192,25 @@ class ConstraintOutput(BaseModel):
             "Set to False for specific targeted questions like 'Where is boiler X?' or 'Does Level 2 have any doors?'."
         )
     )
+    query_kind: str = Field(
+        default="unknown",
+        description=(
+            "One of floor_inventory, type_on_floor, cross_floor_count, "
+            "multi_floor, negation, or unknown."
+        ),
+    )
+    floors: list[str] = Field(
+        default_factory=list,
+        description="All floor/level references extracted from the query, in user wording.",
+    )
+    ifc_types: list[str] = Field(
+        default_factory=list,
+        description="Normalized IFC entity class names explicitly requested by the query.",
+    )
+    needs_exhaustive_answer: bool = Field(
+        default=False,
+        description="True when the user asks for every/all/complete inventory/count.",
+    )
 
     @field_validator("is_inventory_query", mode="before")
     @classmethod
@@ -199,6 +218,101 @@ class ConstraintOutput(BaseModel):
         if isinstance(v, str):
             return v.lower() in ("true", "1", "yes")
         return v
+
+
+_TYPE_SYNONYMS: dict[str, list[str]] = {
+    "IfcDoor": ["door", "doors"],
+    "IfcWindow": ["window", "windows", "glazing"],
+    "IfcWall": ["wall", "walls", "partition", "partitions"],
+    "IfcWallStandardCase": ["wall", "walls", "partition", "partitions"],
+    "IfcSlab": ["slab", "slabs", "floor plate", "floor plates"],
+    "IfcColumn": ["column", "columns"],
+    "IfcBeam": ["beam", "beams"],
+    "IfcStair": ["stair", "stairs", "staircase"],
+    "IfcRoof": ["roof"],
+    "IfcAirTerminal": ["air terminal", "diffuser", "grille"],
+    "IfcDuctSegment": ["duct", "ducts"],
+    "IfcDuctFitting": ["duct fitting", "duct fittings"],
+    "IfcPipeSegment": ["pipe", "pipes", "plumbing"],
+    "IfcPipeFitting": ["pipe fitting", "pipe fittings", "plumbing"],
+    "IfcPump": ["pump", "pumps"],
+    "IfcFan": ["fan", "fans"],
+    "IfcValve": ["valve", "valves"],
+    "IfcSanitaryTerminal": ["fixture", "fixtures", "plumbing", "toilet", "sink"],
+    "IfcLightFixture": ["light", "lights", "lighting", "electrical fixture", "electrical fixtures"],
+    "IfcOutlet": ["outlet", "outlets", "electrical"],
+    "IfcSensor": ["sensor", "sensors"],
+    "IfcActuator": ["actuator", "actuators"],
+    "IfcBoiler": ["boiler", "boilers"],
+    "IfcUnitaryEquipment": ["unitary equipment"],
+}
+
+
+def _infer_ifc_types(query: str) -> list[str]:
+    q = query.lower()
+    found: list[str] = []
+    for ifc_type, terms in _TYPE_SYNONYMS.items():
+        if any(term in q for term in terms):
+            found.append(ifc_type)
+    # Keep explicit impossible/adversarial IFC class names visible to graph filters.
+    for explicit in re.findall(r"\bIfc[A-Za-z0-9_]+\b", query):
+        if explicit not in found:
+            found.append(explicit)
+    return found
+
+
+def _infer_floor_refs(query: str, extracted_floor: str) -> list[str]:
+    refs: list[str] = []
+    q = query.lower()
+    for match in re.finditer(r"\b(?:level|floor)\s*\d+\b", query, flags=re.IGNORECASE):
+        refs.append(match.group(0).title().replace("Floor", "Level"))
+    if re.search(r"\bfloors?\s+1\s+(?:and|&)\s+2\b", q):
+        refs.extend(["Level 1", "Level 2"])
+    phrase_map = [
+        ("ground floor", "ground floor"),
+        ("ground level", "ground floor"),
+        ("upper floor", "upper level"),
+        ("upper level", "upper level"),
+        ("foundation", "foundation"),
+        ("roof", "roof"),
+    ]
+    for needle, label in phrase_map:
+        if needle in q:
+            refs.append(label)
+    if extracted_floor:
+        refs.insert(0, extracted_floor)
+    deduped: list[str] = []
+    for ref in refs:
+        if ref and ref not in deduped:
+            deduped.append(ref)
+    return deduped
+
+
+def _infer_query_kind(query: str, floors: list[str], ifc_types: list[str], is_inventory: bool) -> str:
+    q = query.lower()
+    if " not on " in q or "not located on" in q or "except" in q:
+        return "negation"
+    if len(floors) > 1 or re.search(r"\bfloors?\s+\d+\s+(?:and|&)\s+\d+\b", q):
+        return "multi_floor"
+    if (
+        not floors
+        and ("which floor" in q or "which floors" in q or "across all" in q
+             or "total" in q or "most elements" in q or "how many" in q)
+    ):
+        return "cross_floor_count"
+    if floors and (ifc_types or _is_equipment_query(query)):
+        return "type_on_floor"
+    if floors and is_inventory:
+        return "floor_inventory"
+    return "unknown"
+
+
+def _confidence_for_source(source: str) -> str:
+    if source == "graph":
+        return "verified"
+    if source == "ast":
+        return "fallback_verified"
+    return "semantic_unverified"
 
 
 class EvaluatorOutput(BaseModel):
@@ -255,12 +369,19 @@ def extract_spatial_constraints(state: BIMGraphState) -> dict:
         f'Analyze this BIM query and respond ONLY with a JSON object — no markdown, no explanation.\n\n'
         f'Query: "{state["query"]}"\n\n'
         f'Required JSON format:\n'
-        f'{{"spatial_constraints": "<floor name or empty string>", "is_inventory_query": true or false}}\n\n'
+        f'{{"spatial_constraints": "<floor name or empty string>", '
+        f'"is_inventory_query": true or false, '
+        f'"query_kind": "floor_inventory|type_on_floor|cross_floor_count|multi_floor|negation|unknown", '
+        f'"floors": ["<all floor references>"], '
+        f'"ifc_types": ["<Ifc class names when explicit>"], '
+        f'"needs_exhaustive_answer": true or false}}\n\n'
         f'Rules:\n'
         f'- spatial_constraints: the exact floor/level/zone (e.g. "Level 2", "Ground Floor"). '
         f'Empty string if no floor is mentioned.\n'
         f'- is_inventory_query: true if asking for exhaustive list/inventory ("what is present", '
-        f'"list all", "every element"). false for targeted questions.'
+        f'"list all", "every element"). false for targeted questions.\n'
+        f'- query_kind: use cross_floor_count for totals/comparisons without one floor; '
+        f'use negation for NOT/except; use multi_floor when multiple floors are requested.'
     )
 
     llm = _get_llm_fast()
@@ -270,12 +391,36 @@ def extract_spatial_constraints(state: BIMGraphState) -> dict:
         llm.with_structured_output(ConstraintOutput, method="json_mode").invoke
     )(prompt)
 
+    llm_floor = result.spatial_constraints
+    floors = getattr(result, "floors", []) or _infer_floor_refs(state["query"], llm_floor)
+    if not floors and llm_floor:
+        floors = [llm_floor]
+    inferred_types = _infer_ifc_types(state["query"])
+    ifc_types = getattr(result, "ifc_types", []) or inferred_types
+    is_inventory = result.is_inventory_query or any(
+        term in state["query"].lower()
+        for term in ("complete inventory", "every", "all elements", "list all", "show all", "what is present")
+    )
+    llm_kind = getattr(result, "query_kind", "unknown")
+    query_kind = llm_kind if llm_kind != "unknown" else _infer_query_kind(
+        state["query"], floors, ifc_types, is_inventory
+    )
+    if query_kind == "unknown":
+        query_kind = _infer_query_kind(state["query"], floors, ifc_types, is_inventory)
+    needs_exhaustive = getattr(result, "needs_exhaustive_answer", False) or is_inventory or query_kind in {
+        "floor_inventory", "multi_floor", "negation", "cross_floor_count"
+    }
+
     elapsed = time.perf_counter() - _t0
     logger.info("  ✓ Extracted spatial constraint: %r (Inventory: %s) [%.2fs]",
-                result.spatial_constraints, result.is_inventory_query, elapsed)
+                llm_floor, is_inventory, elapsed)
     return {
-        "spatial_constraints": result.spatial_constraints,
-        "is_inventory_query":  result.is_inventory_query,
+        "spatial_constraints": floors[0] if floors else llm_floor,
+        "is_inventory_query":  is_inventory,
+        "query_kind":          query_kind,
+        "floors":              floors,
+        "ifc_types":           ifc_types,
+        "needs_exhaustive_answer": needs_exhaustive,
         "node_timings": {**state.get("node_timings", {}), "extract_spatial_constraints": elapsed},
     }
 
@@ -401,6 +546,15 @@ def retrieve_hybrid(state: BIMGraphState) -> dict:
     return {
         "retrieved_nodes":  top_docs,
         "retrieval_source": "dense",
+        "confidence_label": _confidence_for_source("dense"),
+        "evidence": {
+            "source": "dense",
+            "ifc_file": ifc_filename or "",
+            "resolved_floor": floor,
+            "element_guids": [],
+            "cypher_summary": "Hybrid BM25 + vector retrieval; spatial containment is not guaranteed.",
+            "confidence_label": _confidence_for_source("dense"),
+        },
         "node_timings": {**state.get("node_timings", {}), "retrieve_hybrid": elapsed},
     }
 
@@ -441,7 +595,26 @@ def generate(state: BIMGraphState) -> dict:
             "DETERMINISTIC IFC AST TRAVERSAL" if source == "ast"
             else "NEO4J GRAPH DATABASE (Cypher query against IFC hierarchy)"
         )
-        prompt = f"""You are a BIM analyst reviewing verified BIM data.
+        if state.get("query_kind") == "cross_floor_count":
+            prompt = f"""You are a BIM analyst reviewing verified BIM graph data.
+
+The context below was extracted via {source_label} and contains structural counts from the IFC hierarchy.
+Do not invent elements or floors that are not present in the context.
+
+Context:
+{context}
+
+Query: {state["query"]}
+
+Instructions:
+1. Answer the count/comparison directly in the first sentence.
+2. Include the relevant floor/type counts from the context.
+3. If one floor has the highest count, name that floor and count.
+4. Do not include fake GUIDs for aggregate count rows.
+
+Answer:"""
+        else:
+            prompt = f"""You are a BIM analyst reviewing verified BIM data.
 
 The context below was extracted via {source_label} and is SPATIALLY CONFIRMED.
 Every element listed is confirmed on the floor stated. Do not express doubt about floor placement.
@@ -690,7 +863,18 @@ def spatial_ast_retrieval(state: BIMGraphState) -> dict:
     ifc_filename = state.get("ifc_filename")
     if not ifc_filename:
          logger.error("No IFC filename provided in state.")
-         return {"retrieved_nodes": [], "retrieval_source": "ast", "correction_log": state.get("correction_log", [])}
+         return {
+             "retrieved_nodes": [],
+             "retrieval_source": "ast",
+             "correction_log": state.get("correction_log", []),
+             "confidence_label": _confidence_for_source("ast"),
+             "evidence": {
+                 "source": "ast",
+                 "ifc_file": "",
+                 "element_guids": [],
+                 "confidence_label": _confidence_for_source("ast"),
+             },
+         }
          
     ifc_model     = _get_ifc(ifc_filename)
     target_storey = _resolve_storey(ifc_model, target)
@@ -698,6 +882,9 @@ def spatial_ast_retrieval(state: BIMGraphState) -> dict:
     if target_storey is None:
         logger.error("  No storey matching %r found in IFC model.", target)
         context_lines = [f"ERROR: No storey matching '{target}' found in IFC model."]
+        resolved_floor = ""
+        matched_storey_guid = ""
+        evidence_guids: list[str] = []
     else:
         logger.info("Storey resolved: %r → %r (GUID: %s)",
                     target, target_storey.Name, target_storey.GlobalId)
@@ -762,6 +949,12 @@ def spatial_ast_retrieval(state: BIMGraphState) -> dict:
             )
 
         context_lines.extend(selected)
+        resolved_floor = target_storey.Name
+        matched_storey_guid = target_storey.GlobalId
+        evidence_guids = [
+            guid for line in selected
+            for guid in re.findall(r"GUID:\s*([A-Za-z0-9$_]{22})", line)
+        ]
 
         logger.info(
             "  ✓ Extracted %d elements from storey %r "
@@ -800,6 +993,17 @@ def spatial_ast_retrieval(state: BIMGraphState) -> dict:
         "correction_log":      state["correction_log"] + [correction_entry],
         "loop_count":          new_loop_count,
         "context_token_count": token_count,
+        "resolved_floor":      resolved_floor,
+        "confidence_label":    _confidence_for_source("ast"),
+        "evidence": {
+            "source":              "ast",
+            "ifc_file":            ifc_filename,
+            "resolved_floor":      resolved_floor,
+            "matched_storey_guid": matched_storey_guid,
+            "element_guids":       evidence_guids,
+            "cypher_summary":      "Deterministic IfcOpenShell AST traversal of IfcRelContainedInSpatialStructure.",
+            "confidence_label":    _confidence_for_source("ast"),
+        },
         "node_timings": {**state.get("node_timings", {}), "spatial_ast_retrieval": elapsed},
     }
 
@@ -850,6 +1054,15 @@ def _resolve_graph_storey(target: str, available_names: list[str]) -> str | None
     return None
 
 
+def _resolve_graph_floors(targets: list[str], available_names: list[str]) -> list[str]:
+    resolved: list[str] = []
+    for target in targets:
+        name = _resolve_graph_storey(target, available_names)
+        if name and name not in resolved:
+            resolved.append(name)
+    return resolved
+
+
 
 # ── Node 5 ─────────────────────────────────────────────────────────────────────
 def graph_query(state: BIMGraphState) -> dict:
@@ -875,8 +1088,13 @@ def graph_query(state: BIMGraphState) -> dict:
     _t0   = time.perf_counter()
     floor = state.get("spatial_constraints", "")
     ifc_f = state.get("ifc_filename", "")
+    query_kind = state.get("query_kind", "unknown")
+    ifc_types = state.get("ifc_types", [])
     set_request_id(state.get("request_id", "-"))
-    logger.info("▶ [Node 5] graph_query  |  floor: %r  |  file: %r", floor, ifc_f)
+    logger.info(
+        "▶ [Node 5] graph_query  |  floor: %r  |  kind: %s  |  file: %r",
+        floor, query_kind, ifc_f,
+    )
 
     # ── Guard: Neo4j must be available and the file must be loaded ─────────────
     if not gq.is_graph_available():
@@ -885,6 +1103,12 @@ def graph_query(state: BIMGraphState) -> dict:
             "retrieved_nodes":    [],
             "retrieval_source":   "graph_unavailable",
             "graph_result_count": 0,
+            "confidence_label":   "semantic_unverified",
+            "evidence": {
+                "source": "graph_unavailable",
+                "ifc_file": ifc_f,
+                "confidence_label": "semantic_unverified",
+            },
             "node_timings": {**state.get("node_timings", {}), "graph_query": time.perf_counter() - _t0},
         }
 
@@ -894,46 +1118,115 @@ def graph_query(state: BIMGraphState) -> dict:
             "retrieved_nodes":    [],
             "retrieval_source":   "graph_unavailable",
             "graph_result_count": 0,
+            "confidence_label":   "semantic_unverified",
+            "evidence": {
+                "source": "graph_unavailable",
+                "ifc_file": ifc_f,
+                "confidence_label": "semantic_unverified",
+            },
             "node_timings": {**state.get("node_timings", {}), "graph_query": time.perf_counter() - _t0},
         }
 
     # ── Fuzzy Floor Resolution ────────────────────────────────────────────────
     # Extracted floor names (e.g. "ground floor") often mismatch IFC names (e.g. "Level 1")
     available_names = gq.get_all_storey_names(ifc_f)
-    resolved_floor  = _resolve_graph_storey(floor, available_names)
-    
-    if resolved_floor:
-        if resolved_floor != floor:
-            logger.info("  Floor resolved: %r → %r", floor, resolved_floor)
-        floor = resolved_floor
-    else:
+    requested_floors = state.get("floors") or ([floor] if floor else [])
+    resolved_floors = _resolve_graph_floors(requested_floors, available_names)
+
+    if floor and not resolved_floors:
         logger.warning("  Could not resolve floor %r in Neo4j. Available: %r", floor, available_names)
+    if resolved_floors:
+        floor = resolved_floors[0]
+        if floor != state.get("spatial_constraints", ""):
+            logger.info("  Floor resolved: %r → %r", state.get("spatial_constraints", ""), floor)
 
     # ── Select Cypher query based on query intent ──────────────────────────────
     is_equip = _is_equipment_query(state.get("query", ""))
     is_inv   = state.get("is_inventory_query", False)
+    records: list[dict] = []
+    count_rows: list[dict] = []
+    strategy = "graph_full_inventory"
+    cypher_summary = "MATCH (s:Storey)-[:CONTAINS]->(e:Element)"
 
-    if is_equip and not is_inv:
+    if query_kind == "cross_floor_count":
+        if "most elements" in state.get("query", "").lower():
+            count_rows = gq.count_elements_by_storey(ifc_f)
+            strategy = "graph_storey_count"
+            cypher_summary = "Count elements per Storey and order by count descending."
+        elif ifc_types:
+            count_rows = gq.count_elements_by_storey(ifc_f, ifc_types)
+            strategy = "graph_type_count_by_storey"
+            cypher_summary = f"Count {', '.join(ifc_types)} elements per Storey."
+        else:
+            count_rows = gq.count_elements_total(ifc_f)
+            strategy = "graph_total_count"
+            cypher_summary = "Count elements by IFC type across all Storeys."
+        context_lines = gq.format_count_context(count_rows, strategy)
+    elif query_kind == "multi_floor" and resolved_floors:
+        records = gq.get_elements_on_floors(resolved_floors, ifc_f, ifc_types or None)
+        strategy = "graph_multi_floor"
+        cypher_summary = f"Fetch elements where Storey.name IN {resolved_floors}."
+        context_lines = gq.format_results_as_context(records, ", ".join(resolved_floors))
+    elif query_kind == "negation" and resolved_floors:
+        records = gq.get_elements_not_on_floor(resolved_floors[0], ifc_f, ifc_types or None)
+        strategy = "graph_not_on_floor"
+        cypher_summary = f"Fetch elements where Storey.name <> {resolved_floors[0]!r}."
+        context_lines = gq.format_results_as_context(records, f"NOT {resolved_floors[0]}")
+    elif ifc_types and resolved_floors:
+        records = gq.get_elements_on_floors([floor], ifc_f, ifc_types)
+        strategy = "graph_type_filter"
+        cypher_summary = f"Fetch {', '.join(ifc_types)} elements contained by {floor!r}."
+        context_lines = gq.format_results_as_context(records, floor)
+    elif is_equip and not is_inv and resolved_floors:
         records = gq.get_mep_elements_on_floor(floor, ifc_f)
         strategy = "graph_mep_filter"
-    else:
+        cypher_summary = f"Fetch MEP IFC types contained by {floor!r}."
+        context_lines = gq.format_results_as_context(records, floor)
+    elif resolved_floors:
         records = gq.get_all_elements_on_floor(floor, ifc_f)
         strategy = "graph_full_inventory"
+        cypher_summary = f"Fetch all elements contained by {floor!r}."
+        context_lines = gq.format_results_as_context(records, floor)
+    else:
+        count_rows = gq.count_elements_total(ifc_f, ifc_types or None)
+        strategy = "graph_total_count"
+        cypher_summary = "Count matching elements across all Storeys."
+        context_lines = gq.format_count_context(count_rows, strategy)
 
+    element_guids = [r["guid"] for r in records if r.get("guid")]
+    matched_storey_guid = ""
+    if floor:
+        try:
+            details = gq.get_storey_details(floor, ifc_f)
+            matched_storey_guid = (details or {}).get("guid", "")
+        except Exception as exc:
+            logger.debug("  Storey detail lookup skipped: %s", exc)
 
-    context_lines = gq.format_results_as_context(records, floor)
     token_count   = sum(len(line.split()) for line in context_lines)
     elapsed       = time.perf_counter() - _t0
+    result_count   = len(records) if records else sum(int(r.get("count", 0)) for r in count_rows)
+    confidence     = _confidence_for_source("graph")
 
     logger.info(
         "  ✓ Graph query complete: %d records, strategy=%s [%.2fs]",
-        len(records), strategy, elapsed,
+        result_count, strategy, elapsed,
     )
 
     return {
         "retrieved_nodes":     context_lines,
         "retrieval_source":    "graph",
-        "graph_result_count":  len(records),
+        "graph_result_count":  result_count,
         "context_token_count": token_count,
+        "resolved_floor":      floor,
+        "confidence_label":    confidence,
+        "evidence": {
+            "source":              "graph",
+            "ifc_file":            ifc_f,
+            "resolved_floor":      floor,
+            "matched_storey_guid": matched_storey_guid,
+            "element_guids":       element_guids,
+            "cypher_summary":      cypher_summary,
+            "confidence_label":    confidence,
+        },
         "node_timings": {**state.get("node_timings", {}), "graph_query": elapsed},
     }

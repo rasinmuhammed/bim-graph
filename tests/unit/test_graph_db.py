@@ -128,6 +128,69 @@ def test_graph_query_returns_all_elements_for_inventory_query():
         assert result["graph_result_count"] == 2
 
 
+def test_graph_query_returns_evidence_payload_for_verified_results():
+    """Graph answers should expose proof metadata for the UI proof panel."""
+    mock_records = [
+        {"ifc_type": "IfcDoor", "name": "D-01", "guid": "3AxGUt8yz4AQ4P0r12AB12"},
+    ]
+
+    with patch("graph_db.queries.is_graph_available", return_value=True), \
+         patch("graph_db.queries.is_file_loaded", return_value=True), \
+         patch("graph_db.queries.get_all_storey_names", return_value=["Level 2"]), \
+         patch("graph_db.queries.get_elements_on_floors", return_value=mock_records), \
+         patch("graph_db.queries.get_storey_details", return_value={"guid": "STOREYGUID"}):
+
+        from agent.nodes import graph_query
+
+        result = graph_query({
+            "query": "What doors are installed on Level 2?",
+            "spatial_constraints": "Level 2",
+            "floors": ["Level 2"],
+            "ifc_types": ["IfcDoor"],
+            "query_kind": "type_on_floor",
+            "is_inventory_query": False,
+            "ifc_filename": "Duplex_A_20110907.ifc",
+            "node_timings": {},
+        })
+
+    assert result["confidence_label"] == "verified"
+    assert result["evidence"]["source"] == "graph"
+    assert result["evidence"]["resolved_floor"] == "Level 2"
+    assert result["evidence"]["matched_storey_guid"] == "STOREYGUID"
+    assert result["evidence"]["element_guids"] == ["3AxGUt8yz4AQ4P0r12AB12"]
+
+
+def test_graph_query_cross_floor_count_uses_aggregation():
+    """Which-floor/count style questions should use graph count rows."""
+    rows = [
+        {"floor": "Level 2", "storey_guid": "S2", "elevation_m": 3.0, "count": 8},
+        {"floor": "Level 1", "storey_guid": "S1", "elevation_m": 0.0, "count": 4},
+    ]
+
+    with patch("graph_db.queries.is_graph_available", return_value=True), \
+         patch("graph_db.queries.is_file_loaded", return_value=True), \
+         patch("graph_db.queries.get_all_storey_names", return_value=["Level 1", "Level 2"]), \
+         patch("graph_db.queries.count_elements_by_storey", return_value=rows) as mock_count:
+
+        from agent.nodes import graph_query
+
+        result = graph_query({
+            "query": "Which floors contain doors and how many are on each floor?",
+            "spatial_constraints": "",
+            "floors": [],
+            "ifc_types": ["IfcDoor"],
+            "query_kind": "cross_floor_count",
+            "is_inventory_query": False,
+            "ifc_filename": "Duplex_A_20110907.ifc",
+            "node_timings": {},
+        })
+
+    mock_count.assert_called_once_with("Duplex_A_20110907.ifc", ["IfcDoor"])
+    assert result["retrieval_source"] == "graph"
+    assert result["graph_result_count"] == 12
+    assert "STRUCTURAL COUNT" in result["retrieved_nodes"][0]
+
+
 # ── routing ─────────────────────────────────────────────────────────────────────
 def test_route_after_extraction_goes_to_graph_when_floor_known():
     """

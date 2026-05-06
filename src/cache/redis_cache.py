@@ -33,17 +33,17 @@ def _get_client():
 _client = _get_client()   # singleton
 
 
-def _make_key(query: str) -> str:
-    raw = query.lower().strip()
+def _make_key(query: str, ifc_filename: str = "") -> str:
+    raw = f"{ifc_filename.lower().strip()}|{query.lower().strip()}"
     return "bim-graph:" + hashlib.sha256(raw.encode()).hexdigest()
 
 
-def cache_get(query: str) -> dict | None:
+def cache_get(query: str, ifc_filename: str = "") -> dict | None:
     """
     Look up a cached result.
     Returns {"answer": str, "correction_log": list, "extracted_guids": list} or None on miss.
     """
-    key  = _make_key(query)
+    key  = _make_key(query, ifc_filename)
     data = _client.get(key)
     if data:
         logger.info("  [Cache] ⚡ CACHE HIT  key=%s…", key[-8:])
@@ -54,13 +54,23 @@ def cache_get(query: str) -> dict | None:
     return None
 
 
-def cache_set(query: str, answer: str, correction_log: list, extracted_guids: list | None = None) -> None:
+def cache_set(
+    query: str,
+    answer: str,
+    correction_log: list,
+    extracted_guids: list | None = None,
+    metadata: dict | None = None,
+    ifc_filename: str = "",
+) -> None:
     """Store a successful result with TTL."""
-    key     = _make_key(query)
-    payload = json.dumps({
+    key     = _make_key(query, ifc_filename)
+    payload_dict = {
         "answer":          answer,
         "correction_log":  correction_log,
         "extracted_guids": extracted_guids or [],
-    })
+    }
+    if metadata:
+        payload_dict.update(metadata)
+    payload = json.dumps(payload_dict)
     _client.setex(key, _TTL_SECONDS, payload)
     logger.info("  [Cache] Stored  key=%s…  TTL=%ds", key[-8:], _TTL_SECONDS)

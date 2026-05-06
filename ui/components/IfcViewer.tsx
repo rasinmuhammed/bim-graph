@@ -6,12 +6,7 @@ import type { Mesh, Material, MeshLambertMaterial } from "three";
 interface Props {
   ifcUrl: string | null;
   highlightGuids: string[];
-}
-
-interface ViewerHandle {
-  load: (url: string) => Promise<void>;
-  highlight: (guids: string[]) => Promise<void>;
-  dispose: () => void;
+  onLoadingChange?: (loading: boolean) => void;
 }
 
 async function createViewer(container: HTMLDivElement): Promise<ViewerHandle> {
@@ -60,7 +55,11 @@ async function createViewer(container: HTMLDivElement): Promise<ViewerHandle> {
   };
 
   // ── Load ─────────────────────────────────────────────────────────────────
+  let _onLoadingChange: ((v: boolean) => void) | undefined;
+
   const load = async (url: string) => {
+    _onLoadingChange?.(true);
+    try {
     clearScene();
 
     const resp   = await fetch(url);
@@ -140,6 +139,10 @@ async function createViewer(container: HTMLDivElement): Promise<ViewerHandle> {
         true,
       );
     }
+
+    } finally {
+      _onLoadingChange?.(false);
+    }
   };
 
   // ── Highlight ─────────────────────────────────────────────────────────────
@@ -206,10 +209,17 @@ async function createViewer(container: HTMLDivElement): Promise<ViewerHandle> {
     components.dispose();
   };
 
-  return { load, highlight, dispose };
+  return { load, highlight, dispose, setOnLoadingChange: (fn: (v: boolean) => void) => { _onLoadingChange = fn; } };
 }
 
-export default function IfcViewer({ ifcUrl, highlightGuids }: Props) {
+interface ViewerHandle {
+  load: (url: string) => Promise<void>;
+  highlight: (guids: string[]) => Promise<void>;
+  dispose: () => void;
+  setOnLoadingChange: (fn: (v: boolean) => void) => void;
+}
+
+export default function IfcViewer({ ifcUrl, highlightGuids, onLoadingChange }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef    = useRef<ViewerHandle | null>(null);
   const currentUrl   = useRef<string | null>(null);
@@ -220,6 +230,7 @@ export default function IfcViewer({ ifcUrl, highlightGuids }: Props) {
     createViewer(containerRef.current).then(handle => {
       if (cancelled) { handle.dispose(); return; }
       viewerRef.current = handle;
+      if (onLoadingChange) handle.setOnLoadingChange(onLoadingChange);
       if (ifcUrl) {
         handle.load(ifcUrl).catch(console.error);
         currentUrl.current = ifcUrl;

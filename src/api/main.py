@@ -34,7 +34,7 @@ _API_DIR      = pathlib.Path(__file__).resolve().parent
 _SRC_DIR      = _API_DIR.parent
 _PROJECT_ROOT = _SRC_DIR.parent
 
-from fastapi import FastAPI, Query as QParam, HTTPException, UploadFile, File
+from fastapi import FastAPI, Query as QParam, HTTPException, UploadFile, File, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
@@ -70,7 +70,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins     = ["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins     = ["http://localhost:3000", "http://127.0.0.1:3000", "http://ui:3000"],
     allow_credentials = True,
     allow_methods     = ["*"],
     allow_headers     = ["*"],
@@ -122,7 +122,33 @@ def _blank_state(query: str, ifc_filename: str, request_id: str = "") -> dict:
         "graph_result_count":  0,
         "request_id":          request_id,
         "extracted_guids":     [],
+        "query_kind":          "unknown",
+        "floors":              [],
+        "ifc_types":           [],
+        "needs_exhaustive_answer": False,
+        "resolved_floor":      "",
+        "evidence":            {},
+        "confidence_label":    "semantic_unverified",
     }
+
+
+def _cache_evidence(ifc_filename: str, cached: dict) -> dict:
+    return {
+        "source": "cache",
+        "ifc_file": ifc_filename,
+        "resolved_floor": cached.get("resolved_floor", ""),
+        "matched_storey_guid": cached.get("matched_storey_guid", ""),
+        "element_guids": cached.get("extracted_guids", []),
+        "cypher_summary": "Served from Redis cache; original retrieval proof is not replayed.",
+        "confidence_label": "verified" if cached.get("extracted_guids") else "semantic_unverified",
+    }
+
+
+def _require_admin_token(x_admin_token: str | None) -> None:
+    if not settings.admin_token:
+        raise HTTPException(403, "ADMIN_TOKEN is not configured.")
+    if x_admin_token != settings.admin_token:
+        raise HTTPException(401, "Invalid admin token.")
 
 
 def _node_to_event(node_name: str, node_output: dict) -> dict:
@@ -175,7 +201,36 @@ def _node_to_event(node_name: str, node_output: dict) -> dict:
 
 @app.get("/health", tags=["Meta"])
 async def health():
-    return {"status": "ok", "timestamp": datetime.now().isoformat()}
+    from graph_db.queries import is_graph_available
+    neo4j_ok = is_graph_available()
+    graph_loaded_files = []
+    graph_storey_count = 0
+    graph_element_count = 0
+    if neo4j_ok:
+        try:
+            from graph_db.queries import get_loaded_file_stats
+            graph_loaded_files = get_loaded_file_stats()
+            graph_storey_count = sum(int(f.get("storey_count", 0)) for f in graph_loaded_files)
+            graph_element_count = sum(int(f.get("element_count", 0)) for f in graph_loaded_files)
+        except Exception as exc:
+            logger.warning("health graph diagnostics failed: %s", exc)
+    redis_ok  = False
+    try:
+        from cache.redis_cache import _client
+        _client.ping()
+        redis_ok = True
+    except Exception:
+        pass
+    status = "ok" if (neo4j_ok and redis_ok) else "degraded"
+    return {
+        "status":    status,
+        "timestamp": datetime.now().isoformat(),
+        "services":  {"neo4j": neo4j_ok, "redis": redis_ok},
+        "graph_loaded_files": graph_loaded_files,
+        "graph_storey_count": graph_storey_count,
+        "graph_element_count": graph_element_count,
+        "demo_upload_enabled": settings.demo_upload_enabled,
+    }
 
 
 @app.get("/floors", tags=["IFC"])
@@ -193,6 +248,29 @@ async def list_models():
     """Return all IFC files available in the data directory."""
     files = sorted(p.name for p in (_PROJECT_ROOT / "data").glob("*.ifc"))
     return {"models": files}
+
+
+@app.get("/models/{filename}/summary", tags=["IFC"])
+async def model_summary(filename: str):
+    safe = pathlib.Path(filename).name
+    if safe != filename or not filename.endswith(".ifc"):
+        raise HTTPException(400, "Invalid filename.")
+    if not (_PROJECT_ROOT / "data" / safe).exists():
+        raise HTTPException(404, f"{safe} not found.")
+    try:
+        from graph_db.queries import is_graph_available, is_file_loaded, get_model_summary
+        if is_graph_available() and is_file_loaded(safe):
+            return get_model_summary(safe)
+    except Exception as exc:
+        logger.warning("graph model summary unavailable for %s: %s", safe, exc)
+    floors = list_all_floors(str(_PROJECT_ROOT / "data" / safe))
+    return {
+        "ifc_file": safe,
+        "storey_count": len(floors),
+        "element_count": sum(int(f.get("element_count", 0)) for f in floors),
+        "floors": floors,
+        "top_ifc_types": [],
+    }
 
 
 @app.get("/ifc/{filename}", tags=["IFC"])
@@ -215,6 +293,8 @@ _upload_jobs: dict[str, dict] = {}
 @app.post("/upload", tags=["IFC"])
 async def upload_ifc(file: UploadFile = File(...)):
     """Accept an IFC upload, save it, and re-index in the background."""
+    if not settings.demo_upload_enabled:
+        raise HTTPException(403, "IFC upload is disabled for this public demo.")
     if not file.filename or not file.filename.endswith(".ifc"):
         raise HTTPException(400, "Only .ifc files accepted.")
     safe = pathlib.Path(file.filename).name
@@ -230,8 +310,12 @@ async def upload_ifc(file: UploadFile = File(...)):
     def _index():
         try:
             from indexer.spatial_indexer import index_single_file, build_bm25_from_chroma
+            from graph_db.queries import ensure_schema
+            from graph_db.loader import load_ifc_to_graph
             index_single_file(str(dest))
             build_bm25_from_chroma()
+            ensure_schema()
+            load_ifc_to_graph(dest)
             _upload_jobs[job_id]["status"] = "ready"
             logger.info("indexing complete for job %s", job_id)
         except Exception as exc:
@@ -241,6 +325,49 @@ async def upload_ifc(file: UploadFile = File(...)):
 
     threading.Thread(target=_index, daemon=True).start()
     return {"job_id": job_id, "filename": safe, "status": "indexing"}
+
+
+@app.post("/admin/reindex", tags=["Admin"])
+async def admin_reindex(x_admin_token: str | None = Header(default=None)):
+    """Rebuild Chroma, BM25 and Neo4j from data/*.ifc. Protected by ADMIN_TOKEN."""
+    _require_admin_token(x_admin_token)
+    job_id = uuid.uuid4().hex[:8]
+    _upload_jobs[job_id] = {"status": "indexing", "filename": "all"}
+
+    def _reindex():
+        try:
+            import chromadb
+            from indexer.spatial_indexer import index_ifc_file, build_bm25_from_chroma
+            from graph_db.queries import ensure_schema, clear_graph
+            from graph_db.loader import load_ifc_to_graph
+
+            data_dir = _PROJECT_ROOT / "data"
+            ifc_files = sorted(data_dir.glob("*.ifc"))
+            client = chromadb.PersistentClient(path=settings.chroma_path)
+            try:
+                client.delete_collection("bim_baseline")
+            except Exception:
+                pass
+            for ifc_file in ifc_files:
+                index_ifc_file(ifc_file, client, group_size=settings.chroma_group_size)
+            build_bm25_from_chroma()
+            ensure_schema()
+            clear_graph()
+            ensure_schema()
+            graph_stats = [load_ifc_to_graph(f) for f in ifc_files]
+            _upload_jobs[job_id] = {
+                "status": "ready",
+                "filename": "all",
+                "files": [f.name for f in ifc_files],
+                "graph_stats": graph_stats,
+            }
+        except Exception as exc:
+            _upload_jobs[job_id]["status"] = "error"
+            _upload_jobs[job_id]["error"] = str(exc)
+            logger.exception("admin reindex failed")
+
+    threading.Thread(target=_reindex, daemon=True).start()
+    return {"job_id": job_id, "status": "indexing"}
 
 
 @app.get("/upload/{job_id}", tags=["IFC"])
@@ -275,23 +402,35 @@ async def query_pipeline(req: QueryRequest):
     t0  = time.time()
     logger.info("request_start query=%r ifc=%s", req.query, req.ifc_filename)
 
-    cached = cache_get(req.query)
+    cached = cache_get(req.query, req.ifc_filename)
     if cached:
+        evidence = _cache_evidence(req.ifc_filename, cached)
         logger.info("cache_hit latency_ms=%d", int((time.time() - t0) * 1000))
         return {
             "answer":              cached["answer"],
-            "spatial_constraints": "",
+            "spatial_constraints": cached.get("spatial_constraints", ""),
             "retrieval_source":    "cache",
             "cache_hit":           True,
             "self_healed":         False,
             "correction_log":      cached.get("correction_log", []),
             "latency_ms":          int((time.time() - t0) * 1000),
             "request_id":          rid,
+            "resolved_floor":      evidence.get("resolved_floor", ""),
+            "query_kind":          cached.get("query_kind", "unknown"),
+            "evidence":            evidence,
+            "confidence_label":    evidence.get("confidence_label", "semantic_unverified"),
+            "extracted_guids":     cached.get("extracted_guids", []),
         }
 
     state = graph.invoke(_blank_state(req.query, req.ifc_filename, rid))
 
-    cache_set(req.query, state.get("generation", ""), state.get("correction_log", []), state.get("extracted_guids", []))
+    cache_set(req.query, state.get("generation", ""), state.get("correction_log", []),
+              state.get("extracted_guids", []), {
+                  "spatial_constraints": state.get("spatial_constraints", ""),
+                  "resolved_floor": state.get("resolved_floor", ""),
+                  "query_kind": state.get("query_kind", "unknown"),
+                  "matched_storey_guid": state.get("evidence", {}).get("matched_storey_guid", ""),
+              }, ifc_filename=req.ifc_filename)
 
     latency_ms = int((time.time() - t0) * 1000)
     logger.info(
@@ -310,6 +449,11 @@ async def query_pipeline(req: QueryRequest):
         "graph_result_count":  state.get("graph_result_count", 0),
         "latency_ms":          latency_ms,
         "request_id":          rid,
+        "resolved_floor":      state.get("resolved_floor", ""),
+        "query_kind":          state.get("query_kind", "unknown"),
+        "evidence":            state.get("evidence", {}),
+        "confidence_label":    state.get("confidence_label", "semantic_unverified"),
+        "extracted_guids":     state.get("extracted_guids", []),
     }
 
 
@@ -338,8 +482,9 @@ async def query_stream(
         t0 = time.time()
 
         # ── Cache check ────────────────────────────────────────────────────
-        cached = cache_get(q)
+        cached = cache_get(q, f)
         if cached:
+            evidence = _cache_evidence(f, cached)
             yield _sse("cache_hit", {
                 "answer":       cached["answer"],
                 "latency_ms":   int((time.time() - t0) * 1000),
@@ -354,7 +499,11 @@ async def query_stream(
                 "node_timings":        {},
                 "graph_result_count":  0,
                 "extracted_guids":     cached.get("extracted_guids", []),
-                "spatial_constraints": "",
+                "spatial_constraints": cached.get("spatial_constraints", ""),
+                "resolved_floor":      evidence.get("resolved_floor", ""),
+                "query_kind":          cached.get("query_kind", "unknown"),
+                "evidence":            evidence,
+                "confidence_label":    evidence.get("confidence_label", "semantic_unverified"),
             })
             return
 
@@ -405,7 +554,13 @@ async def query_stream(
 
             if kind == "done":
                 # Write to cache
-                cache_set(q, final_state.get("generation", ""), final_state.get("correction_log", []), final_state.get("extracted_guids", []))
+                cache_set(q, final_state.get("generation", ""), final_state.get("correction_log", []),
+                          final_state.get("extracted_guids", []), {
+                              "spatial_constraints": final_state.get("spatial_constraints", ""),
+                              "resolved_floor": final_state.get("resolved_floor", ""),
+                              "query_kind": final_state.get("query_kind", "unknown"),
+                              "matched_storey_guid": final_state.get("evidence", {}).get("matched_storey_guid", ""),
+                          }, ifc_filename=f)
                 latency_ms = int((time.time() - t0) * 1000)
                 logger.info(
                     "stream_end source=%s self_healed=%s latency_ms=%d",
@@ -426,6 +581,10 @@ async def query_stream(
                     "extracted_guids":     final_state.get("extracted_guids", []),
                     "latency_ms":          latency_ms,
                     "request_id":          rid,
+                    "resolved_floor":      final_state.get("resolved_floor", ""),
+                    "query_kind":          final_state.get("query_kind", "unknown"),
+                    "evidence":            final_state.get("evidence", {}),
+                    "confidence_label":    final_state.get("confidence_label", "semantic_unverified"),
                 })
                 break
 
