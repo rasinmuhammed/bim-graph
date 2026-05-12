@@ -9,7 +9,6 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator
 from langchain_ollama import OllamaEmbeddings
 from langchain_groq import ChatGroq
-from langchain_openai import ChatOpenAI
 from tenacity import (
     retry,
     retry_if_exception,
@@ -130,6 +129,7 @@ def _get_chroma_collection():
 @lru_cache(maxsize=1)
 def _get_llm_fast():
     if _provider == "cerebras":
+        from langchain_openai import ChatOpenAI
         _logger.info("LLM fast: Cerebras llama3.1-8b")
         return ChatOpenAI(
             model="llama3.1-8b",
@@ -143,6 +143,7 @@ def _get_llm_fast():
 @lru_cache(maxsize=1)
 def _get_llm_big():
     if _provider == "cerebras":
+        from langchain_openai import ChatOpenAI
         _logger.info("LLM big: Cerebras qwen-3-235b")
         return ChatOpenAI(
             model="qwen-3-235b-a22b-instruct-2507",
@@ -396,7 +397,10 @@ def extract_spatial_constraints(state: BIMGraphState) -> dict:
     if not floors and llm_floor:
         floors = [llm_floor]
     inferred_types = _infer_ifc_types(state["query"])
-    ifc_types = getattr(result, "ifc_types", []) or inferred_types
+    llm_types = getattr(result, "ifc_types", []) or []
+    # Always merge LLM types with inferred types — the LLM often outputs "IfcWall" but
+    # the IFC stores "IfcWallStandardCase". Union ensures both subtypes are queried.
+    ifc_types = list(dict.fromkeys(llm_types + inferred_types))
     is_inventory = result.is_inventory_query or any(
         term in state["query"].lower()
         for term in ("complete inventory", "every", "all elements", "list all", "show all", "what is present")
@@ -407,6 +411,11 @@ def extract_spatial_constraints(state: BIMGraphState) -> dict:
     )
     if query_kind == "unknown":
         query_kind = _infer_query_kind(state["query"], floors, ifc_types, is_inventory)
+    # Override: cross_floor_count only makes sense when there is NO floor constraint.
+    # When floors are identified, always route to a floor-specific strategy.
+    if query_kind == "cross_floor_count" and floors:
+        recheck = _infer_query_kind(state["query"], floors, ifc_types, is_inventory)
+        query_kind = recheck if recheck != "unknown" else ("type_on_floor" if ifc_types else "floor_inventory")
     needs_exhaustive = getattr(result, "needs_exhaustive_answer", False) or is_inventory or query_kind in {
         "floor_inventory", "multi_floor", "negation", "cross_floor_count"
     }
@@ -630,9 +639,11 @@ Instructions:
 1. Use the IFC type guide to identify relevant element types for the query.
    For inventory/listing queries, include EVERY element from the context.
 2. Open with one clear summary sentence (e.g. "There are 8 single-flush doors on Level 2.").
-3. List each matching element on its own line:
-   • [human-readable name and size if available] [GUID]
-   The GUID must be enclosed in square brackets exactly as it appears in the context.
+3. List EVERY element on its own line — no truncation, no "..." shortcuts, no omissions:
+   • Element name [GUID]
+   The GUID is the 22-character identifier in the context; wrap it in square brackets.
+   Example: • IfcWall:Wall-001 [3$7kI7b4L41fQ0vJnj_dJx]
+   CRITICAL: every GUID you omit causes a verification failure. Output all of them.
 4. Group by type with a header when there are multiple types (e.g. "Doors (8):").
 5. End with one insight sentence if relevant (e.g. dominant size, material, or count).
 6. Do NOT say "I cannot determine" or "insufficient data" — the spatial data is verified.
@@ -651,8 +662,8 @@ Context:
 Query: {state["query"]}
 
 If the context contains specific elements, open with a summary sentence, then list each as:
-• [human-readable description] [GUID]
-with the GUID enclosed in square brackets.
+• Element name [GUID]
+with the 22-character GUID enclosed in square brackets — include every element, no truncation.
 
 Answer:"""
 
@@ -1008,49 +1019,71 @@ def spatial_ast_retrieval(state: BIMGraphState) -> dict:
     }
 
 
+def _floor_sort_key(name: str):
+    """Sort key: extract leading number so Level 1 < Level 2 < Roof."""
+    import re as _re
+    nums = _re.findall(r"\d+", name)
+    return (int(nums[0]) if nums else 999, name.lower())
+
+
 def _resolve_graph_storey(target: str, available_names: list[str]) -> str | None:
     """Fuzzy match informal floor names against strict names in Neo4j."""
     import difflib
     if not available_names:
         return None
-        
+
     t = target.lower().strip()
-    
+
     # 1. Exact match
     for n in available_names:
         if n.lower().strip() == t:
             return n
-            
+
     # 2. Substring match
     for n in available_names:
         nl = n.lower()
         if t in nl or nl in t:
             return n
-            
-    # 3. Known keyword mappings (Foundation/Ground/Upper)
+
+    # 3. Known keyword mappings with positional fallback
+    # Foundation / basement — keyword match, then lowest underground name
     if any(k in t for k in _FOUNDATION_KW):
         for n in available_names:
             if any(k in n.lower() for k in _FOUNDATION_KW):
                 return n
-                
+        # No name contains foundation keyword → pick lowest (most negative) floor
+        return sorted(available_names, key=_floor_sort_key)[0]
+
+    # Ground floor — keyword match, then lowest non-foundation floor
     if any(k in t for k in _GROUND_KW):
         for n in available_names:
             if any(k in n.lower() for k in _GROUND_KW):
                 return n
-                
+        non_fdn = [n for n in available_names
+                   if not any(k in n.lower() for k in _FOUNDATION_KW)]
+        if non_fdn:
+            return sorted(non_fdn, key=_floor_sort_key)[0]
+
+    # Upper / top floor — keyword match, then highest numbered non-foundation non-roof floor
     if any(k in t for k in _UPPER_KW):
         for n in available_names:
             if any(k in n.lower() for k in _UPPER_KW):
                 return n
-                
+        # Exclude foundation and roof from candidates — they are not "upper"
+        non_special = [n for n in available_names
+                       if not any(k in n.lower() for k in {"roof", "dach", "sky"})
+                       and not any(k in n.lower() for k in _FOUNDATION_KW)
+                       and _floor_sort_key(n)[0] < 900]  # skip unnamed floors
+        candidates = non_special or available_names
+        return sorted(candidates, key=_floor_sort_key, reverse=True)[0]
+
     # 4. Fuzzy difflib match
     close = difflib.get_close_matches(t, [n.lower() for n in available_names], n=1, cutoff=0.5)
     if close:
-        # Find original name
         for n in available_names:
             if n.lower() == close[0]:
                 return n
-                
+
     return None
 
 
