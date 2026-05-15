@@ -20,14 +20,26 @@ The fix isn't to write better prompts. The fix is to use the right data structur
 
 The pipeline is a LangGraph state machine with five nodes:
 
-```
-query → extract_spatial_constraints
-          │
-          ├── (floor known) → graph_query → generate → evaluate
-          │                                               │
-          └── (no floor)   → retrieve_hybrid             ├── (pass) → done
-                                                          │
-                                                          └── (fail) → spatial_ast_retrieval → generate
+```mermaid
+flowchart LR
+    Q([Query]) --> E[Extract Floor\n& Intent]
+
+    E -->|floor known| G[(Neo4j\nGraph Query)]
+    E -->|no floor| H[BM25 +\nVector Hybrid]
+
+    G --> Gen[Generate]
+    H --> Gen
+
+    Gen --> Ev{Evaluate\nSpatial Match?}
+
+    Ev -->|pass| Done([Answer + GUIDs\nhighlighted in 3D])
+    Ev -->|fail| AST[IFC AST\nTraversal]
+
+    AST --> Gen
+
+    style G fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style AST fill:#3b1e1e,stroke:#ef4444,color:#fca5a5
+    style Done fill:#1a3a2a,stroke:#22c55e,color:#86efac
 ```
 
 **Node 1 — extract_spatial_constraints**
@@ -69,7 +81,7 @@ The system tracks which retrieval path produced the final answer via `retrieval_
 - **Graph database:** Neo4j 5 (Community Edition) — stores IFC hierarchy as a property graph
 - **Vector search:** ChromaDB (local persistent) — nomic-embed-text via Ollama for embeddings
 - **Lexical search:** Rank-BM25 — serialized index, loaded once at startup
-- **LLM:** Groq API (llama-3.3-70b-versatile) — fast inference, free tier sufficient for development
+- **LLM:** Two-tier on Groq free tier — `llama-3.1-8b-instant` (128K ctx) for fast classification, `llama-3.3-70b-versatile` (128K ctx) for generation. Cerebras supported as a zero-rate-limit alternative.
 - **Semantic cache:** Redis — SHA-256 keyed on normalized query text, 1 hour TTL
 - **API:** FastAPI with Server-Sent Events — streams node completions to the UI in real time
 - **BIM parsing:** IfcOpenShell — used for both indexing and AST fallback
@@ -101,9 +113,9 @@ cp .env.example .env
 # Free sample files: https://github.com/buildingSMART/Sample-Test-Files
 
 # 6. Index the IFC files (builds ChromaDB + BM25 index + loads Neo4j)
-python -m indexer.chroma_indexer
-python -m indexer.bm25_index
-python -m graph_db.loader
+# Run from src/ directory
+python -m indexer.spatial_indexer   # ChromaDB + BM25 in one pass
+python -m graph_db.loader           # IFC hierarchy → Neo4j
 
 # 7. Start the API
 uvicorn api.main:app --reload --port 8000
@@ -116,15 +128,50 @@ Open `http://localhost:3000`.
 
 ---
 
+## Benchmark results
+
+30 queries across 4 IFC models, scored against a deterministic IfcOpenShell oracle (GUID-level P/R/F1).
+
+| Metric | Value |
+|---|---|
+| **Avg F1** | **0.816** |
+| Avg Precision | 0.839 |
+| Avg Recall | 0.828 |
+| Graph hit rate | 86.7% |
+| Self-heal rate | 13.3% |
+| Avg latency | 7.6s |
+
+**Per category:**
+
+| Category | N | Avg F1 |
+|---|---|---|
+| cross_floor | 3 | 1.000 |
+| architectural | 7 | 0.844 |
+| adversarial | 6 | 0.833 |
+| mep | 8 | 0.812 |
+| inventory | 6 | 0.677 |
+
+The remaining failures are concentrated in the inventory category (large element lists where the LLM truncates) and one cross-floor adversarial case where the answer phrasing doesn't match the floor-name keyword scorer. The MEP self-heal cases are PCERT files that route through AST instead of graph and still score well.
+
 ## Running the benchmark
 
-The benchmark runs all 25 queries from `src/benchmark/query_set.json` through the pipeline and scores each answer against the IFC oracle (GUID-level precision/recall/F1):
+The benchmark scores all queries against the IFC oracle (GUID-level precision/recall/F1). LLM responses are cached to SQLite so reruns cost zero API tokens.
 
 ```bash
+# default (Groq, 5s inter-query sleep to respect rate limits)
 python -m benchmark.run_benchmark
+
+# Cerebras — no rate limits, ~2s/query, recommended
+python -m benchmark.run_benchmark --provider cerebras
+
+# resume an interrupted run (checkpoint is saved after each query)
+python -m benchmark.run_benchmark --provider cerebras
+
+# force a fresh run ignoring the checkpoint
+python -m benchmark.run_benchmark --provider cerebras --reset
 ```
 
-Results are written to `data/benchmark_results.json`. The oracle is deterministic — it uses IfcOpenShell to get the exact set of element GUIDs on each floor, then checks how many appear in the generated answer.
+Results are written to `data/benchmark_results.json`. The oracle is deterministic — it uses IfcOpenShell to get the exact element GUIDs on each floor, then checks how many appear in the generated answer. The LLM cache (`data/llm_cache.db`) persists across runs; delete it to force fresh API calls.
 
 ---
 
@@ -134,7 +181,7 @@ Results are written to `data/benchmark_results.json`. The oracle is deterministi
 pytest tests/ -v
 ```
 
-17 tests, all mocked — no running Neo4j, Redis, or Ollama required. The unit tests cover the routing logic, graph query dispatch, cache roundtrip, and context formatting. The test suite runs in under 2 seconds.
+30 tests, all mocked — no running Neo4j, Redis, or Ollama required. The unit tests cover routing logic, graph query dispatch, GUID extraction, cache roundtrip, and context formatting. The test suite runs in under 5 seconds.
 
 ---
 
