@@ -106,19 +106,13 @@ def clear_graph() -> None:
 
 def get_all_elements_on_floor(floor: str, ifc_file: str) -> list[dict]:
     """
-    MATCH (s:Storey)-[:CONTAINS]->(e:Element)
-      → Find every Storey node that has a CONTAINS relationship to an Element node.
-
-    WHERE s.name = $floor AND s.file = $file
-      → Filter: only the storey matching our floor name in our IFC file.
-      → $floor and $file are parameters — Neo4j escapes them, preventing injection.
-
-    RETURN ...
-      → Project only the fields we need, not the whole node.
+    Filter by e.file (not s.file) so federated IFC models work correctly —
+    discipline files (MEP, Structural) share storey GUIDs with the Architecture
+    file, so the storey's file tag is unreliable. Element file tags are authoritative.
     """
     cypher = """
     MATCH (s:Storey)-[:CONTAINS]->(e:Element)
-    WHERE s.name = $floor AND s.file = $file
+    WHERE s.name = $floor AND e.file = $file
     RETURN e.ifc_type AS ifc_type, e.name AS name, e.guid AS guid
     ORDER BY e.ifc_type, e.name
     """
@@ -130,8 +124,8 @@ def get_all_elements_on_floor(floor: str, ifc_file: str) -> list[dict]:
 def get_storey_details(floor: str, ifc_file: str) -> dict | None:
     """Return the canonical storey name/GUID/elevation for a resolved floor."""
     cypher = """
-    MATCH (s:Storey)
-    WHERE s.name = $floor AND s.file = $file
+    MATCH (s:Storey)-[:CONTAINS]->(e:Element)
+    WHERE s.name = $floor AND e.file = $file
     RETURN s.name AS name, s.guid AS guid, s.elevation AS elevation_m
     LIMIT 1
     """
@@ -144,7 +138,7 @@ def get_elements_on_floors(floors: list[str], ifc_file: str, ifc_types: list[str
     """Return elements on any of the supplied storeys, optionally filtered by IFC type."""
     cypher = """
     MATCH (s:Storey)-[:CONTAINS]->(e:Element)
-    WHERE s.name IN $floors AND s.file = $file
+    WHERE s.name IN $floors AND e.file = $file
       AND ($ifc_types IS NULL OR e.ifc_type IN $ifc_types)
     RETURN s.name AS floor, e.ifc_type AS ifc_type, e.name AS name, e.guid AS guid
     ORDER BY s.elevation, e.ifc_type, e.name
@@ -158,7 +152,7 @@ def get_elements_not_on_floor(floor: str, ifc_file: str, ifc_types: list[str] | 
     """Return elements contained by storeys other than the excluded floor."""
     cypher = """
     MATCH (s:Storey)-[:CONTAINS]->(e:Element)
-    WHERE s.name <> $floor AND s.file = $file
+    WHERE s.name <> $floor AND e.file = $file
       AND ($ifc_types IS NULL OR e.ifc_type IN $ifc_types)
     RETURN s.name AS floor, e.ifc_type AS ifc_type, e.name AS name, e.guid AS guid
     ORDER BY s.elevation, e.ifc_type, e.name
@@ -171,10 +165,9 @@ def get_elements_not_on_floor(floor: str, ifc_file: str, ifc_types: list[str] | 
 def count_elements_by_storey(ifc_file: str, ifc_types: list[str] | None = None) -> list[dict]:
     """Return per-storey counts, optionally restricted to specific IFC types."""
     cypher = """
-    MATCH (s:Storey)
-    WHERE s.file = $file
-    OPTIONAL MATCH (s)-[:CONTAINS]->(e:Element)
-    WHERE $ifc_types IS NULL OR e.ifc_type IN $ifc_types
+    MATCH (s:Storey)-[:CONTAINS]->(e:Element)
+    WHERE e.file = $file
+      AND ($ifc_types IS NULL OR e.ifc_type IN $ifc_types)
     RETURN s.name AS floor, s.guid AS storey_guid, s.elevation AS elevation_m, count(e) AS count
     ORDER BY count DESC, s.elevation
     """
@@ -187,7 +180,7 @@ def count_elements_total(ifc_file: str, ifc_types: list[str] | None = None) -> l
     """Return counts by IFC type across the whole model."""
     cypher = """
     MATCH (s:Storey)-[:CONTAINS]->(e:Element)
-    WHERE s.file = $file AND ($ifc_types IS NULL OR e.ifc_type IN $ifc_types)
+    WHERE e.file = $file AND ($ifc_types IS NULL OR e.ifc_type IN $ifc_types)
     RETURN e.ifc_type AS ifc_type, count(e) AS count
     ORDER BY count DESC, e.ifc_type
     """
@@ -204,7 +197,7 @@ def get_mep_elements_on_floor(floor: str, ifc_file: str) -> list[dict]:
     """
     cypher = """
     MATCH (s:Storey)-[:CONTAINS]->(e:Element)
-    WHERE s.name = $floor AND s.file = $file AND e.ifc_type IN $mep_types
+    WHERE s.name = $floor AND e.file = $file AND e.ifc_type IN $mep_types
     RETURN e.ifc_type AS ifc_type, e.name AS name, e.guid AS guid
     ORDER BY e.ifc_type, e.name
     """
@@ -224,7 +217,7 @@ def count_elements_by_type_on_floor(floor: str, ifc_file: str) -> list[dict]:
     """
     cypher = """
     MATCH (s:Storey)-[:CONTAINS]->(e:Element)
-    WHERE s.name = $floor AND s.file = $file
+    WHERE s.name = $floor AND e.file = $file
     RETURN e.ifc_type AS ifc_type, count(e) AS count
     ORDER BY count DESC
     """
@@ -240,7 +233,7 @@ def get_elements_by_type_across_floors(ifc_type: str, ifc_file: str) -> list[dic
     """
     cypher = """
     MATCH (s:Storey)-[:CONTAINS]->(e:Element)
-    WHERE e.ifc_type = $ifc_type AND s.file = $file
+    WHERE e.ifc_type = $ifc_type AND e.file = $file
     RETURN s.name AS floor, e.name AS name, e.guid AS guid
     ORDER BY s.name, e.name
     """
@@ -255,9 +248,8 @@ def get_floor_summary(ifc_file: str) -> list[dict]:
     as a faster alternative to re-parsing the IFC file each time.
     """
     cypher = """
-    MATCH (s:Storey)
-    WHERE s.file = $file
-    OPTIONAL MATCH (s)-[:CONTAINS]->(e:Element)
+    MATCH (s:Storey)-[:CONTAINS]->(e:Element)
+    WHERE e.file = $file
     RETURN s.name AS name, s.elevation AS elevation_m, count(e) AS element_count
     ORDER BY s.elevation
     """
@@ -269,9 +261,8 @@ def get_floor_summary(ifc_file: str) -> list[dict]:
 def get_loaded_file_stats() -> list[dict]:
     """Return graph diagnostics grouped by IFC file."""
     cypher = """
-    MATCH (s:Storey)
-    OPTIONAL MATCH (s)-[:CONTAINS]->(e:Element)
-    RETURN s.file AS file, count(DISTINCT s) AS storey_count, count(DISTINCT e) AS element_count
+    MATCH (s:Storey)-[:CONTAINS]->(e:Element)
+    RETURN e.file AS file, count(DISTINCT s) AS storey_count, count(DISTINCT e) AS element_count
     ORDER BY file
     """
     with _get_driver().session() as session:
@@ -284,7 +275,7 @@ def get_model_summary(ifc_file: str) -> dict:
     floors = get_floor_summary(ifc_file)
     cypher = """
     MATCH (s:Storey)-[:CONTAINS]->(e:Element)
-    WHERE s.file = $file
+    WHERE e.file = $file
     RETURN e.ifc_type AS ifc_type, count(e) AS count
     ORDER BY count DESC, e.ifc_type
     LIMIT 12
@@ -302,15 +293,19 @@ def get_model_summary(ifc_file: str) -> dict:
 
 def is_file_loaded(ifc_file: str) -> bool:
     """Check if this IFC file has already been ingested into Neo4j."""
-    cypher = "MATCH (s:Storey {file: $file}) RETURN count(s) AS n LIMIT 1"
+    cypher = "MATCH (e:Element {file: $file}) RETURN count(e) AS n LIMIT 1"
     with _get_driver().session() as session:
         result = session.run(cypher, file=ifc_file)
         return result.single()["n"] > 0
 
 
 def get_all_storey_names(ifc_file: str) -> list[str]:
-    """Return all available storey names in the graph for a specific file."""
-    cypher = "MATCH (s:Storey {file: $file}) RETURN s.name AS name"
+    """Return storey names accessible from this file's elements (handles federated models)."""
+    cypher = """
+    MATCH (s:Storey)-[:CONTAINS]->(e:Element)
+    WHERE e.file = $file
+    RETURN DISTINCT s.name AS name
+    """
     with _get_driver().session() as session:
         result = session.run(cypher, file=ifc_file)
         return [r["name"] for r in result]
